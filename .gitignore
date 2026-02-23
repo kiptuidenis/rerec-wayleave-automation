@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# Project specific
+data/
+debug/
+output/
+manual_review_required.txt
+
+# OS
+.DS_Store
+Thumbs.db

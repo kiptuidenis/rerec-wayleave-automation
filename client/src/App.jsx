@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
     Upload,
@@ -17,7 +17,11 @@ import {
     FileUp,
     LayoutDashboard,
     Database,
-    CircleCheck
+    CircleCheck,
+    Maximize2,
+    X,
+    ZoomIn,
+    ZoomOut
 } from 'lucide-react';
 import axios from 'axios';
 import { HotTable } from '@handsontable/react';
@@ -52,6 +56,15 @@ export default function App() {
     const [isFinalizing, setIsFinalizing] = useState(false);
     const [previewUrl, setPreviewUrl] = useState(null);
     const [isPreviewLoading, setIsPreviewLoading] = useState(false);
+    const [isLightboxOpen, setIsLightboxOpen] = useState(false);
+    const [lightboxZoom, setLightboxZoom] = useState(1);
+
+    // Close lightbox on Escape key
+    useEffect(() => {
+        const onKey = (e) => { if (e.key === 'Escape') { setIsLightboxOpen(false); setLightboxZoom(1); } };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, []);
 
     // Sync Results to HotData
     useEffect(() => {
@@ -379,7 +392,7 @@ export default function App() {
                                         </div>
                                         <div>
                                             <h3 className="text-sm font-bold text-slate-800 uppercase tracking-tight">Metadata Validation Grid</h3>
-                                            <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">{results.length} Entities Identified • Real-time Sync Active</p>
+                                            <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">{results.length} Entities Identified â€¢ Real-time Sync Active</p>
                                         </div>
                                     </div>
                                     <div className="flex items-center space-x-4">
@@ -445,29 +458,51 @@ export default function App() {
                                     </div>
 
                                     {/* Preview Panel */}
-                                    <div className="w-[450px] bg-slate-50 border-l border-slate-200 p-8 flex flex-col relative overflow-hidden">
-                                        <div className="flex items-center justify-between mb-6">
+                                    <div className="w-[450px] bg-slate-50 border-l border-slate-200 p-6 flex flex-col relative overflow-hidden">
+                                        <div className="flex items-center justify-between mb-4">
                                             <h4 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Document Evidence</h4>
-                                            <div className="bg-white px-3 py-1 rounded-md border border-slate-200 text-[9px] font-bold text-slate-600 shadow-sm">
-                                                {previewUrl ? 'SYNCED' : 'AWAITING'}
+                                            <div className="flex items-center space-x-2">
+                                                {previewUrl && (
+                                                    <button
+                                                        onClick={() => { setIsLightboxOpen(true); setLightboxZoom(1); }}
+                                                        className="flex items-center space-x-1.5 bg-brand-primary hover:bg-blue-800 text-white px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all shadow-sm"
+                                                    >
+                                                        <Maximize2 size={11} />
+                                                        <span>Full View</span>
+                                                    </button>
+                                                )}
+                                                <div className="bg-white px-3 py-1 rounded-md border border-slate-200 text-[9px] font-bold text-slate-600 shadow-sm">
+                                                    {previewUrl ? 'SYNCED' : 'AWAITING'}
+                                                </div>
                                             </div>
                                         </div>
 
-                                        <div className="flex-1 rounded-xl overflow-hidden border border-slate-200 bg-slate-200/50 flex items-center justify-center relative group shadow-inner">
+                                        <div
+                                            className={`flex-1 rounded-xl overflow-hidden border border-slate-200 bg-slate-200/50 flex items-center justify-center relative group shadow-inner ${previewUrl ? 'cursor-zoom-in' : ''}`}
+                                            onClick={() => previewUrl && (setIsLightboxOpen(true), setLightboxZoom(1))}
+                                        >
                                             {isPreviewLoading ? (
                                                 <div className="flex flex-col items-center space-y-4">
                                                     <Loader2 size={32} className="text-brand-primary animate-spin" />
                                                     <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Loading Evidence...</p>
                                                 </div>
                                             ) : previewUrl ? (
-                                                <motion.img
-                                                    key={selectedId}
-                                                    initial={{ opacity: 0 }}
-                                                    animate={{ opacity: 1 }}
-                                                    src={previewUrl}
-                                                    alt="Source Evidence"
-                                                    className="w-full h-full object-contain"
-                                                />
+                                                <>
+                                                    <motion.img
+                                                        key={selectedId}
+                                                        initial={{ opacity: 0 }}
+                                                        animate={{ opacity: 1 }}
+                                                        src={previewUrl}
+                                                        alt="Source Evidence"
+                                                        className="w-full h-full object-contain"
+                                                    />
+                                                    <div className="absolute inset-0 bg-brand-primary/0 group-hover:bg-brand-primary/10 transition-all flex items-center justify-center">
+                                                        <div className="opacity-0 group-hover:opacity-100 transition-all bg-white/90 backdrop-blur-sm rounded-full px-4 py-2 flex items-center space-x-2 shadow-lg">
+                                                            <Maximize2 size={14} className="text-brand-primary" />
+                                                            <span className="text-[10px] font-bold text-slate-700 uppercase tracking-wider">Click to expand</span>
+                                                        </div>
+                                                    </div>
+                                                </>
                                             ) : (
                                                 <div className="text-center p-8">
                                                     <div className="bg-white/50 w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4 border border-slate-100">
@@ -480,7 +515,7 @@ export default function App() {
                                             )}
                                         </div>
 
-                                        <div className="mt-6 p-4 bg-white rounded-lg border border-slate-200 shadow-sm">
+                                        <div className="mt-4 p-4 bg-white rounded-lg border border-slate-200 shadow-sm">
                                             <p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest mb-1">Source File</p>
                                             <p className="text-[11px] font-bold text-slate-700 truncate">
                                                 {results.find(r => r._id === selectedId)?._file_name || 'No file selected'}
@@ -490,6 +525,63 @@ export default function App() {
                                 </div>
                             </motion.div>
                         )}
+
+                        {/* LIGHTBOX MODAL */}
+                        <AnimatePresence>
+                            {isLightboxOpen && previewUrl && (
+                                <motion.div
+                                    key="lightbox"
+                                    initial={{ opacity: 0 }}
+                                    animate={{ opacity: 1 }}
+                                    exit={{ opacity: 0 }}
+                                    transition={{ duration: 0.18 }}
+                                    className="fixed inset-0 z-[9999] flex items-center justify-center"
+                                    onClick={() => { setIsLightboxOpen(false); setLightboxZoom(1); }}
+                                >
+                                    <div className="absolute inset-0 bg-slate-900/85 backdrop-blur-md" />
+
+                                    <div className="absolute top-6 left-1/2 -translate-x-1/2 z-10 flex items-center space-x-3 bg-white/10 backdrop-blur-sm border border-white/20 rounded-2xl px-4 py-2 shadow-2xl">
+                                        <span className="text-[10px] font-bold text-white/70 uppercase tracking-widest truncate max-w-[200px]">
+                                            {results.find(r => r._id === selectedId)?._file_name || 'Document'}
+                                        </span>
+                                        <div className="w-px h-4 bg-white/20" />
+                                        <button onClick={(e) => { e.stopPropagation(); setLightboxZoom(z => Math.max(0.5, z - 0.25)); }} className="text-white/80 hover:text-white p-1.5 rounded-lg hover:bg-white/10 transition-all"><ZoomOut size={16} /></button>
+                                        <span className="text-[11px] font-bold text-white min-w-[40px] text-center">{Math.round(lightboxZoom * 100)}%</span>
+                                        <button onClick={(e) => { e.stopPropagation(); setLightboxZoom(z => Math.min(4, z + 0.25)); }} className="text-white/80 hover:text-white p-1.5 rounded-lg hover:bg-white/10 transition-all"><ZoomIn size={16} /></button>
+                                        <div className="w-px h-4 bg-white/20" />
+                                        <button onClick={(e) => { e.stopPropagation(); setIsLightboxOpen(false); setLightboxZoom(1); }} className="text-white/80 hover:text-white p-1.5 rounded-lg hover:bg-white/10 transition-all"><X size={16} /></button>
+                                    </div>
+
+                                    <motion.div
+                                        className="relative z-10 flex items-center justify-center w-full h-full p-20"
+                                        onClick={(e) => e.stopPropagation()}
+                                        initial={{ scale: 0.92, opacity: 0 }}
+                                        animate={{ scale: 1, opacity: 1 }}
+                                        exit={{ scale: 0.95, opacity: 0 }}
+                                        transition={{ duration: 0.18 }}
+                                    >
+                                        <img
+                                            src={previewUrl}
+                                            alt="Document Fullscreen View"
+                                            style={{
+                                                transform: `scale(${lightboxZoom})`,
+                                                transformOrigin: 'center center',
+                                                transition: 'transform 0.2s ease',
+                                                maxWidth: '100%',
+                                                maxHeight: '100%',
+                                                objectFit: 'contain',
+                                                borderRadius: '8px',
+                                                boxShadow: '0 25px 60px rgba(0,0,0,0.5)',
+                                            }}
+                                        />
+                                    </motion.div>
+
+                                    <div className="absolute bottom-6 left-1/2 -translate-x-1/2 text-[10px] font-bold text-white/40 uppercase tracking-widest">
+                                        Press Esc or click backdrop to close
+                                    </div>
+                                </motion.div>
+                            )}
+                        </AnimatePresence>
 
                         {step === 3 && (
                             <motion.div

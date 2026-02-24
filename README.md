@@ -50,4 +50,4 @@ This will open the application in your browser at `http://localhost:8503`.
 *   `run.py`: Command-line runner for offline automation.
 
 ---
-*Powered by REREC Engineering & Gemini Vision AI*
+*Powered by MicroSolutions*

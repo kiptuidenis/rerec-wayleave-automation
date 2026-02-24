@@ -21,7 +21,7 @@ if not API_KEY:
     print("WARNING: GEMINI_API_KEY not found in environment or .env file.")
     API_KEY = "MISSING_KEY"
 
-MODEL_NAME = "gemini-3-flash-preview"
+MODEL_NAME = "gemini-2.5-flash"
 
 # Column mapping for Excel: col_index -> JSON key (None = special handling)
 COL_MAP = {

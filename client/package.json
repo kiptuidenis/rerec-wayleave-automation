@@ -10,10 +10,13 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@handsontable/react": "^16.2.0",
     "@tailwindcss/vite": "^4.2.1",
     "axios": "^1.13.5",
     "clsx": "^2.1.1",
     "framer-motion": "^12.34.3",
+    "handsontable": "^16.2.0",
+    "hyperformula": "^3.2.0",
     "lucide-react": "^0.575.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",

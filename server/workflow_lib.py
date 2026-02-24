@@ -21,7 +21,7 @@ if not API_KEY:
     print("WARNING: GEMINI_API_KEY not found in environment or .env file.")
     API_KEY = "MISSING_KEY"
 
-MODEL_NAME = "gemini-2.5-flash"
+MODEL_NAME = "gemini-3-flash-preview"
 
 # Column mapping for Excel: col_index -> JSON key (None = special handling)
 COL_MAP = {
@@ -157,20 +157,16 @@ class SitePlanLocator:
 
     def _build_index(self):
         print("Indexing Site Plan (this may take a moment)...")
-        # ... rest of the method ...
+        # Optimization: We currently use direct fitz search, no indexing needed for now.
+        pass
 
     def close(self):
         """Explicitly close the PDF document."""
-        if hasattr(self, 'doc'):
-            self.doc.close()
-        for page_num, page in enumerate(self.doc):
-            words = page.get_text("words") # (x0, y0, x1, y1, word, block_no, line_no, word_no)
-            for w in words:
-                self.index.append({
-                    "text": w[4],
-                    "rect": fitz.Rect(w[0], w[1], w[2], w[3]),
-                    "page": page_num
-                })
+        if hasattr(self, 'doc') and self.doc:
+            try:
+                self.doc.close()
+            except Exception:
+                pass
     
     def search(self, name, title_number):
         """

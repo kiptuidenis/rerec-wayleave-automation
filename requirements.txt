@@ -1,0 +1,8 @@
+PyMuPDF
+google-genai
+thefuzz
+python-dotenv
+openpyxl
+fastapi
+uvicorn
+python-multipart

@@ -55,7 +55,15 @@ class ConsentExtractor:
         
         doc = None
         try:
-            doc = fitz.open(pdf_path)
+            # Pre-validation
+            try:
+                doc = fitz.open(pdf_path)
+                if doc.is_closed or doc.page_count == 0:
+                    raise Exception("PDF is empty or corrupted")
+            except Exception as e:
+                yield 0, {"type": "error", "message": f"Invalid PDF file: {str(e)}"}
+                return
+
             num_pages = len(doc)
             # Pre-extract images to avoid threading issues with fitz.Document
             # (though we usually open it per-thread or keep it global if thread-safe)
@@ -162,6 +170,8 @@ class ConsentExtractor:
             """
             
             import time
+            import random
+            
             retries = 5
             response = None
             for attempt in range(retries):
@@ -176,14 +186,19 @@ class ConsentExtractor:
                     break 
                 except Exception as e:
                     err_msg = str(e).upper()
-                    if any(x in err_msg for x in ["503", "UNAVAILABLE", "RATE_LIMIT", "QUOTA"]):
-                        if attempt < retries - 1:
-                            wait_time = (attempt + 1) * 3
-                            print(f"    [Retry {attempt+1}] Gemini API busy/unavailable: {e}. Waiting {wait_time}s...")
-                            time.sleep(wait_time)
-                            continue
-                    print(f"    [Page {page_num+1} Error] Failed: {e}")
-                    return None
+                    # Retry logic for transient errors
+                    is_transient = any(x in err_msg for x in ["503", "504", "500", "UNAVAILABLE", "RATE_LIMIT", "QUOTA", "DEADLINE_EXCEEDED"])
+                    
+                    if is_transient and attempt < retries - 1:
+                        # Exponential backoff with jitter
+                        wait_time = (2 ** attempt) + (random.random() * 2)
+                        print(f"    [Retry {attempt+1}/{retries}] Gemini API issue: {e}. Waiting {wait_time:.1f}s...")
+                        time.sleep(wait_time)
+                        continue
+                    
+                    # Log final failure for this page but allow the process to continue
+                    print(f"    [Page {page_num+1} Final Failure] {e}")
+                    return {"is_wayleave_consent_form": False, "_error": str(e)}
 
             if not response or not response.text:
                 return None

@@ -69,7 +69,21 @@ async def extract_documents(
         # For this demo, let's assume we clean up and the frontend sends files per request.
         for item in temp_files:
             if os.path.exists(item["path"]):
-                os.remove(item["path"])
+                # On Windows, file handles can take a moment to release.
+                # Adding a small retry loop for deletion.
+                import time
+                for i in range(3):
+                    try:
+                        os.remove(item["path"])
+                        break
+                    except PermissionError:
+                        if i < 2:
+                            time.sleep(0.3)
+                        else:
+                            print(f"    [Cleanup Warning] Could not delete temp file {item['path']}: Access Denied")
+                    except Exception as e:
+                        print(f"    [Cleanup Warning] Error deleting {item['path']}: {e}")
+                        break
 
 @app.post("/finalize")
 async def finalize_project(

@@ -83,10 +83,26 @@ export default function App() {
                 r["Phone No"] || ''
             ]);
 
-            // Only update if data is different to avoid loops
-            if (JSON.stringify(data) !== JSON.stringify(hotData)) {
-                setHotData(data);
-            }
+            // Only update hotData if it's actually empty or the size changed
+            // Otherwise, we let handleHotChange manage the granular updates
+            // to avoid re-rendering the whole grid on every keystroke.
+            setHotData(prev => {
+                if (prev.length === 0 || prev.length !== data.length) {
+                    return data;
+                }
+                // Check if any value changed externally
+                let changed = false;
+                for (let i = 0; i < data.length; i++) {
+                    for (let j = 0; j < data[i].length; j++) {
+                        if (data[i][j] !== prev[i][j]) {
+                            changed = true;
+                            break;
+                        }
+                    }
+                    if (changed) break;
+                }
+                return changed ? data : prev;
+            });
         } else if (hotData.length > 0) {
             setHotData([]);
         }
@@ -190,40 +206,43 @@ export default function App() {
         setResults(prev => prev.map(r => r._id === id ? { ...r, [field]: value } : r));
     };
 
-    const handleHotChange = (changes) => {
-        if (!changes) return;
+    const handleHotChange = (changes, source) => {
+        if (!changes || source === 'loadData') return;
 
-        const newResults = [...results];
-        const newHotData = [...hotData];
+        setResults(prevResults => {
+            const nextResults = [...prevResults];
+            let hasChanged = false;
 
-        changes.forEach(([row, col, oldValue, newValue]) => {
-            if (oldValue === newValue) return;
+            changes.forEach(([row, prop, oldValue, newValue]) => {
+                if (oldValue === newValue) return;
 
-            // Map column index to field name
-            const colMap = [
-                "Project Name",
-                "Signed by",
-                "Plot No",
-                "Owned by",
-                "Constituency",
-                "County",
-                "ID No",
-                "Consent Signed",
-                "Relationship",
-                "Phone No"
-            ];
+                // Map prop (which is the index in hotData) to field name
+                const colMap = [
+                    "Project Name",
+                    "Signed by",
+                    "Plot No",
+                    "Owned by",
+                    "Constituency",
+                    "County",
+                    "ID No",
+                    "Consent Signed",
+                    "Relationship",
+                    "Phone No"
+                ];
 
-            const field = colMap[col];
-            if (field && newResults[row]) {
-                newResults[row][field] = newValue;
-            }
-            if (newHotData[row]) {
-                newHotData[row][col] = newValue;
-            }
+                // Handsontable can give 'prop' as a string or number depending on config
+                // In our case it's the index because data is an array of arrays
+                const colIndex = parseInt(prop);
+                const field = colMap[colIndex];
+
+                if (field && nextResults[row]) {
+                    nextResults[row] = { ...nextResults[row], [field]: newValue };
+                    hasChanged = true;
+                }
+            });
+
+            return hasChanged ? nextResults : prevResults;
         });
-
-        setResults(newResults);
-        setHotData(newHotData);
     };
 
     const StepIndicator = () => (
@@ -442,9 +461,19 @@ export default function App() {
                                                 autoWrapCol={true}
                                                 autoWrapRow={true}
                                                 stretchH="all"
+                                                fillHandle={true} // Enable drag-to-fill
                                                 afterChange={handleHotChange}
-                                                afterSelectionEnd={(row) => {
-                                                    if (results[row]) setSelectedId(results[row]._id);
+                                                afterSelectionEnd={function (row) {
+                                                    // Use getSourceDataAtRow to get the true index when sorted
+                                                    const sourceData = this.getSourceDataAtRow(row);
+                                                    // In our array-of-arrays case, we need to find the result object 
+                                                    // that matches this data, or simply find the index in original results
+                                                    // Simplified: results and original hotData share indexes
+                                                    const visualIndex = row;
+                                                    const logicalRow = this.toPhysicalRow(visualIndex);
+                                                    if (results[logicalRow]) {
+                                                        setSelectedId(results[logicalRow]._id);
+                                                    }
                                                 }}
                                                 viewportRowRenderingOffset={10}
                                                 className="corporate-hot"

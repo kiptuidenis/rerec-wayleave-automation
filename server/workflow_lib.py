@@ -51,32 +51,44 @@ class ConsentExtractor:
         Extracts details from ALL pages of the PDF sequentially.
         Yields: (page_num, data_json) or (page_num, None) if failed.
         """
+        doc = None
         try:
             doc = fitz.open(pdf_path)
             for page_num in range(len(doc)):
                 print(f"  Analyzing Page {page_num + 1}...")
-                data = self.process_page(pdf_path, page_num)
-                yield page_num, data
+                data = self.process_page(doc, page_num)
+                if data and data.get("is_wayleave_consent_form"):
+                    yield page_num, data
+                elif data:
+                    print(f"    [Skipping Page {page_num+1}] Not a Wayleave Consent Form (ID/Deed/Map/etc.)")
         except Exception as e:
             print(f"[Extractor Error] {e}")
             return
+        finally:
+            if doc:
+                doc.close()
+                print(f"  Closed PDF handle for {pdf_path}")
 
-    def process_page(self, pdf_path, page_num):
+    def process_page(self, doc, page_num):
         """
         Extracts details from a specific page.
         Returns: data_json or None if failed.
         """
         try:
-            doc = fitz.open(pdf_path)
             page = doc[page_num]
             pix = page.get_pixmap(dpi=150) # 150 DPI is enough for text reading
             img_data = pix.tobytes("png")
             
             prompt = """
-            Extract the following from this Wayleave Consent Form image.
+            Determine if this image is a 'WAYLEAVE CONSENT FORM'. 
+            Standard forms have 'WAYLEAVE CONSENT FORM' as a title and fields for Land owner, Plot No, etc. 
+            Scanned IDs, Maps, Title Deeds, or other documents are NOT consent forms.
+
+            Extract the following from this image.
             Return ONLY valid JSON -- no markdown, no explanation.
 
             {
+              "is_wayleave_consent_form": true or false,
               "Project Name": "Name of project/village",
               "Constituency": "Constituency name",
               "County": "County name",
@@ -93,12 +105,12 @@ class ConsentExtractor:
             }
 
             Rules for Spatial Detection:
-            - Identify the empty rectangular box in the bottom half intended for a site sketch. 
-            - Return its bounding box as [ymin, xmin, ymax, xmax] on a scale of 0-1000.
+            - If is_wayleave_consent_form is false, return null for all other fields except is_wayleave_consent_form.
+            - If true, identify the empty rectangular box in the bottom half intended for a site sketch and return its bounding box as [ymin, xmin, ymax, xmax] on a scale of 0-1000.
             """
             
             import time
-            retries = 3
+            retries = 5
             response = None
             for attempt in range(retries):
                 try:
@@ -111,13 +123,17 @@ class ConsentExtractor:
                     )
                     break # Success
                 except Exception as e:
-                    if attempt < retries - 1:
-                        wait_time = 2 ** attempt
-                        print(f"    [Retry {attempt+1}] Gemini API error: {e}. Waiting {wait_time}s...")
-                        time.sleep(wait_time)
-                    else:
-                        print(f"    [Page {page_num+1} Error] Failed after retries: {e}")
-                        return None
+                    err_msg = str(e).upper()
+                    # Retry on rate limits or service unavailability
+                    if any(x in err_msg for x in ["503", "UNAVAILABLE", "RATE_LIMIT", "QUOTA"]):
+                        if attempt < retries - 1:
+                            wait_time = (attempt + 1) * 3  # 3s, 6s, 9s, 12s...
+                            print(f"    [Retry {attempt+1}] Gemini API busy/unavailable: {e}. Waiting {wait_time}s...")
+                            time.sleep(wait_time)
+                            continue
+                    
+                    print(f"    [Page {page_num+1} Error] Failed: {e}")
+                    return None
 
             if not response or not response.text:
                 return None
@@ -140,12 +156,9 @@ class ConsentExtractor:
             data["page_height"] = page.rect.height
             data["rotation"] = page.rotation
             
-            # Close doc to release handle
-            doc.close()
             return data
         except Exception as e:
             print(f"    [Page {page_num+1} Error] {e}")
-            if 'doc' in locals(): doc.close()
             return None
 
 class SitePlanLocator:

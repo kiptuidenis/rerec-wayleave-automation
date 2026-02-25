@@ -88,6 +88,37 @@ async def extract_documents(
 
     return StreamingResponse(event_generator(), media_type="application/x-ndjson")
 
+@app.post("/download-excel")
+async def download_excel(
+    extraction_results: str = Form(...),
+    excel_template: UploadFile = File(...)
+):
+    try:
+        results_list = json.loads(extraction_results)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid extraction_results JSON")
+    
+    temp_dir = tempfile.mkdtemp()
+    try:
+        excel_path = os.path.join(temp_dir, "template.xlsx")
+        with open(excel_path, "wb") as f:
+            shutil.copyfileobj(excel_template.file, f)
+            
+        output_excel_buffer = BytesIO()
+        ExcelWriter.append_data(excel_path, results_list, output_excel_buffer)
+        
+        return Response(
+            content=output_excel_buffer.getvalue(),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": "attachment; filename=Wayleave_Master_List_Edited.xlsx"}
+        )
+    except Exception as e:
+        print(f"Excel Export Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
+
 @app.post("/finalize")
 async def finalize_project(
     background_tasks: BackgroundTasks,

@@ -54,6 +54,7 @@ export default function App() {
     const [hotData, setHotData] = useState([]);
     const [selectedId, setSelectedId] = useState(null);
     const [isFinalizing, setIsFinalizing] = useState(false);
+    const [isExportingExcel, setIsExportingExcel] = useState(false);
     const [previewUrl, setPreviewUrl] = useState(null);
     const [isPreviewLoading, setIsPreviewLoading] = useState(false);
     const [isLightboxOpen, setIsLightboxOpen] = useState(false);
@@ -215,6 +216,44 @@ export default function App() {
             console.error(err);
         } finally {
             setLoading(false);
+        }
+    };
+
+    const handleDownloadExcel = async () => {
+        if (!excelTemplate) {
+            setError("Excel Template is required.");
+            return;
+        }
+
+        setIsExportingExcel(true);
+        setError(null);
+
+        try {
+            const formData = new FormData();
+            formData.append('extraction_results', JSON.stringify(results));
+            formData.append('excel_template', excelTemplate);
+
+            const response = await fetch(`${API_BASE}/download-excel`, {
+                method: 'POST',
+                body: formData,
+            });
+
+            if (!response.ok) throw new Error("Server error during Excel export");
+
+            const blob = await response.blob();
+            const downloadUrl = window.URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = downloadUrl;
+            link.setAttribute('download', 'Wayleave_Master_List_Edited.xlsx');
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            window.URL.revokeObjectURL(downloadUrl);
+        } catch (err) {
+            console.error("Excel Export Error:", err);
+            setError(err.message || "Excel export failed. Please check the server logs.");
+        } finally {
+            setIsExportingExcel(false);
         }
     };
 
@@ -532,6 +571,23 @@ export default function App() {
                                             className="text-slate-500 hover:text-slate-800 text-[10px] font-bold uppercase tracking-widest transition-all px-4 py-2"
                                         >
                                             Back to Upload
+                                        </button>
+                                        <button
+                                            onClick={handleDownloadExcel}
+                                            disabled={isExportingExcel || results.length === 0}
+                                            className="bg-white border border-slate-200 text-slate-700 px-6 py-2.5 rounded-lg font-bold uppercase tracking-wider text-[11px] flex items-center justify-center min-w-[150px] shadow-sm hover:bg-slate-50 transition-all disabled:opacity-50"
+                                        >
+                                            {isExportingExcel ? (
+                                                <div className="flex items-center space-x-2">
+                                                    <Loader2 className="animate-spin" size={12} />
+                                                    <span>Exporting...</span>
+                                                </div>
+                                            ) : (
+                                                <div className="flex items-center space-x-2">
+                                                    <Download size={16} />
+                                                    <span>Download Excel</span>
+                                                </div>
+                                            )}
                                         </button>
                                         <button
                                             onClick={handleFinalize}

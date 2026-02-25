@@ -6,6 +6,7 @@ import json
 import fitz  # PyMuPDF
 from io import BytesIO
 from typing import List
+from collections import defaultdict
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -132,45 +133,63 @@ async def finalize_project(
             output_zip_path = os.path.join(temp_dir, f"results_{file_id}.zip")
             output_excel_buffer = BytesIO()
             
-            total = len(results_list)
-            processed = 0
+            # Grouping records by source file to maintain structure
+            file_groups = defaultdict(list)
+            for row in results_list:
+                f_name = row.get("_file_name")
+                if f_name:
+                    file_groups[f_name].append(row)
+
+            total_files = len(file_groups)
+            processed_files = 0
             
             with zipfile.ZipFile(output_zip_path, "w", zipfile.ZIP_DEFLATED) as zip_file:
-                for row in results_list:
-                    processed += 1
-                    name = row.get("Signed by") or row.get("proprietor_name")
-                    title = row.get("Plot No") or row.get("title_number")
-                    
+                for f_name, rows in file_groups.items():
+                    processed_files += 1
+                    temp_source_path = consent_map.get(f_name)
+                    if not temp_source_path: continue
+
                     yield json.dumps({
                         "type": "progress", 
-                        "current": processed, 
-                        "total": total, 
-                        "message": f"Processing {name or title or 'page'}..."
+                        "current": processed_files, 
+                        "total": total_files, 
+                        "message": f"Annotating {f_name}..."
                     }) + "\n"
-                    
-                    box = row.get("sketch_box_1000")
-                    f_name = row.get("_file_name")
-                    p_num = row.get("_page_num")
-                    temp_path = consent_map.get(f_name)
 
-                    if name and box and temp_path:
-                        match = locator.search(name, title)
-                        if match:
-                            snip_path = os.path.join(temp_dir, f"snip_{row['_id']}.png")
-                            out_pdf_path = os.path.join(temp_dir, f"proc_{row['_id']}.pdf")
-                            
-                            box_w = box[3] - box[1]
-                            box_h = box[2] - box[0]
-                            aspect_ratio = box_w / box_h if box_h != 0 else 1.0
-                            
-                            locator.get_snippet(match, snip_path, aspect_ratio=aspect_ratio)
-                            success = PDFProcessor.overlay_snippet(temp_path, snip_path, box, out_pdf_path, page_index=p_num, rotation=row.get("rotation", 0))
-                            
-                            if success and os.path.exists(out_pdf_path):
-                                safe_title = str(title).replace('/', '_').replace('\\', '_')
-                                zip_name = f"{os.path.splitext(f_name)[0]}_P{p_num+1}_{safe_title}.pdf"
-                                zip_file.write(out_pdf_path, zip_name)
+                    overlay_items = []
+                    for row in rows:
+                        name = row.get("Signed by") or row.get("proprietor_name")
+                        title = row.get("Plot No") or row.get("title_number")
+                        box = row.get("sketch_box_1000")
+                        p_num = row.get("_page_num")
+                        
+                        if name and box:
+                            match = locator.search(name, title)
+                            if match:
+                                snip_path = os.path.join(temp_dir, f"snip_{row['_id']}.png")
+                                box_w = box[3] - box[1]
+                                box_h = box[2] - box[0]
+                                aspect_ratio = box_w / box_h if box_h != 0 else 1.0
+                                
+                                locator.get_snippet(match, snip_path, aspect_ratio=aspect_ratio)
+                                overlay_items.append({
+                                    "page_index": p_num,
+                                    "snippet_path": snip_path,
+                                    "box": box,
+                                    "rotation": row.get("rotation", 0)
+                                })
                     
+                    if overlay_items:
+                        out_filename = f"Annotated_{f_name}"
+                        out_pdf_path = os.path.join(temp_dir, out_filename)
+                        success = PDFProcessor.apply_batch_overlays(temp_source_path, overlay_items, out_pdf_path)
+                        if success and os.path.exists(out_pdf_path):
+                            zip_file.write(out_pdf_path, out_filename)
+                        else:
+                            zip_file.write(temp_source_path, f"Original_{f_name}")
+                    else:
+                        zip_file.write(temp_source_path, f"Original_{f_name}")
+
                     await asyncio.sleep(0.01)
 
                 yield json.dumps({"type": "status", "message": "Updating Excel List..."}) + "\n"

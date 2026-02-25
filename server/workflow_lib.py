@@ -315,53 +315,89 @@ class SitePlanLocator:
         print(f"  Searching for Plot '{plot_no}'...", end="", flush=True)
         
         for page_num, page in enumerate(self.doc):
-             hits = page.search_for(plot_no)
-             for rect in hits:
-                 word = page.get_text("text", clip=rect).strip()
-                 clean_word = re.sub(r'[^\w]', '', word)
-                 
-                 if clean_word == plot_no:
-                     # VICINITY CHECK
-                     search_area = rect + (-500, -500, 500, 500)
-                     nearby_text = page.get_textbox(search_area)
-                     
-                     best_v_score = 0
-                     best_v_rect = rect
-                     best_v_name = ""
+            # get_text("dict") provides font size, color, and bounding boxes for every text span
+            blocks = page.get_text("dict")["blocks"]
+            
+            candidates = []
+            for b in blocks:
+                if "lines" not in b: continue
+                for l in b["lines"]:
+                    for s in l["spans"]:
+                        text = s["text"].strip()
+                        if not text: continue
+                        
+                        # Extract digits for comparison
+                        clean_num = re.sub(r'[^\d]', '', text)
+                        if clean_num != plot_no: continue
+                        
+                        # DISAMBIGUATION LOGIC:
+                        # 1. Ignore if it looks like a dimension (e.g. "39.5", "39m", "39 M")
+                        if re.search(r'\d+\.\d+', text): continue # Decimal point = likely dimension
+                        if re.search(r'[mM]', text): continue     # 'm' or 'M' suffix = dimension
+                        
+                        # 2. Strict Numeric Match: 
+                        # If we search for "3", we don't want "39" or "13"
+                        # re.sub above already gives us the full numeric core of that word
+                        if clean_num == plot_no:
+                            candidates.append({
+                                "rect": fitz.Rect(s["bbox"]),
+                                "size": s["size"],
+                                "color": s["color"],
+                                "text": text
+                            })
+            
+            # Sort candidates by size (Plot numbers are usually larger than dimensions)
+            # And color (Black text = 0)
+            if candidates:
+                # Prioritize: 
+                # 1. Exact numeric match with NO extra characters (cleanest hit)
+                # 2. Largest font size
+                candidates.sort(key=lambda x: (x["text"] == plot_no, x["size"]), reverse=True)
+                
+                for cand in candidates:
+                    rect = cand["rect"]
+                    # VICINITY CHECK
+                    search_area = rect + (-500, -500, 500, 500)
+                    
+                    best_v_score = 0
+                    best_v_rect = rect
+                    best_v_name = ""
 
-                     if name:
-                         
-                         # To handle "Henry Tabut" vs "Henry Bitok" in the same vicinity,
-                         # we must check EVERY occurrence of name parts in this area
-                         name_parts = [p for p in name.lower().split() if len(p) > 2]
-                         for part in name_parts:
-                             part_hits = page.search_for(part, clip=search_area)
-                             for p_hit in part_hits:
-                                 # Score the specific line this part is on
-                                 line_box = p_hit + (-200, -10, 200, 10)
-                                 line_text = page.get_textbox(line_box).replace("\n", " ").strip().lower()
-                                 
-                                 # THE 2-TOKEN RULE (Fuzzy):
-                                 words_in_line = line_text.split()
-                                 matches = 0
-                                 for p in name_parts:
-                                     if any(fuzz.ratio(p, w) > 85 for w in words_in_line):
-                                         matches += 1
-                                 
-                                 if matches >= 2:
-                                     score = fuzz.partial_token_set_ratio(name.lower(), line_text)
-                                     if score > best_v_score:
-                                         best_v_score = score
-                                         best_v_rect = p_hit
-                                         best_v_name = name
+                    if name:
+                        name_parts = [p for p in name.lower().split() if len(p) > 2]
+                        for part in name_parts:
+                            part_hits = page.search_for(part, clip=search_area)
+                            for p_hit in part_hits:
+                                line_box = p_hit + (-200, -10, 200, 10)
+                                line_text = page.get_textbox(line_box).replace("\n", " ").strip().lower()
+                                
+                                words_in_line = line_text.split()
+                                matches = 0
+                                for p in name_parts:
+                                    if any(fuzz.ratio(p, w) > 85 for w in words_in_line):
+                                        matches += 1
+                                
+                                if matches >= 2:
+                                    score = fuzz.partial_token_set_ratio(name.lower(), line_text)
+                                    if score > best_v_score:
+                                        best_v_score = score
+                                        best_v_rect = p_hit
+                                        best_v_name = name
 
-                     if best_v_score > 75:
-                         return {
-                             "page": page_num, 
-                             "rect": best_v_rect, 
-                             "method": f"vicinity_match (Plot {plot_no}, Found {best_v_name} with score {best_v_score})"
-                         }
-                     
+                    if best_v_score > 75:
+                        return {
+                            "page": page_num, 
+                            "rect": best_v_rect, 
+                            "method": f"vicinity_match (Plot {plot_no}, Found {best_v_name} with score {best_v_score})"
+                        }
+                    
+                    # FALLBACK: Return the best numeric hit coordinate
+                    return {
+                        "page": page_num, 
+                        "rect": rect, 
+                        "method": f"plot_fallback (Proprietor not found, matched Plot {plot_no} with size {cand['size']:.1f})"
+                    }
+                    
         return None
 
     def get_snippet(self, search_result, output_path, aspect_ratio=1.0):
@@ -453,6 +489,59 @@ class PDFProcessor:
         except Exception as e:
             print(f"Error overlaying PDF: {e}")
             if 'new_doc' in locals(): new_doc.close()
+            if 'doc' in locals(): doc.close()
+            return False
+
+    @staticmethod
+    def apply_batch_overlays(source_path, overlay_items, output_path):
+        """
+        Opens source PDF and applies multiple snippet overlays, then saves a single result.
+        overlay_items is a list of dicts: {page_index, snippet_path, box, rotation}
+        """
+        doc = fitz.open(source_path)
+        
+        for item in overlay_items:
+            try:
+                page_index = int(item["page_index"])
+                if page_index >= len(doc): continue
+                
+                page = doc[page_index]
+                snippet_path = item["snippet_path"]
+                box = item["box"]
+                rotation = item.get("rotation", 0)
+                
+                # Gemini coordinates 0-1000 mapping
+                ymin, xmin, ymax, xmax = box
+                v_w = page.rect.width
+                v_h = page.rect.height
+                
+                v_p0 = fitz.Point(xmin * v_w / 1000, ymin * v_h / 1000)
+                v_p1 = fitz.Point(xmax * v_w / 1000, ymax * v_h / 1000)
+                
+                # Padding
+                padding_x = (v_p1.x - v_p0.x) * 0.05
+                padding_y = (v_p1.y - v_p0.y) * 0.05
+                v_p0.x += padding_x
+                v_p0.y += padding_y
+                v_p1.x -= padding_x
+                v_p1.y -= padding_y
+
+                mi = ~page.rotation_matrix
+                i_p0 = v_p0 * mi
+                i_p1 = v_p1 * mi
+                rect = fitz.Rect(i_p0, i_p1)
+                rect.normalize()
+                
+                page.insert_image(rect, filename=snippet_path, rotate=rotation)
+            except Exception as e:
+                print(f"Error in batch overlay on page {item.get('page_index')}: {e}")
+                
+        try:
+            doc.save(output_path)
+            doc.close()
+            return True
+        except Exception as e:
+            print(f"Error saving batch PDF: {e}")
             if 'doc' in locals(): doc.close()
             return False
 

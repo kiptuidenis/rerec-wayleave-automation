@@ -48,19 +48,65 @@ class ConsentExtractor:
 
     def extract_details(self, pdf_path):
         """
-        Extracts details from ALL pages of the PDF sequentially.
+        Extracts details from ALL pages of the PDF in parallel.
         Yields: (page_num, data_json) or (page_num, None) if failed.
         """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        
         doc = None
         try:
             doc = fitz.open(pdf_path)
-            for page_num in range(len(doc)):
-                print(f"  Analyzing Page {page_num + 1}...")
-                data = self.process_page(doc, page_num)
+            num_pages = len(doc)
+            # Pre-extract images to avoid threading issues with fitz.Document
+            # (though we usually open it per-thread or keep it global if thread-safe)
+            # For efficiency, we'll extract pixmaps in the main thread and process Gemini in parallel.
+            
+            p_tasks = []
+            for page_num in range(num_pages):
+                page = doc[page_num]
+                pix = page.get_pixmap(dpi=150)
+                img_data = pix.tobytes("png")
+                p_tasks.append({
+                    "page_num": page_num,
+                    "img_data": img_data,
+                    "page_width": page.rect.width,
+                    "page_height": page.rect.height,
+                    "rotation": page.rotation
+                })
+            doc.close() # Close here since we have the image data
+            doc = None
+            print(f"  Extracted {num_pages} pages. Starting parallel analysis...")
+            yield page_num, {"type": "init", "total_pages": num_pages}
+
+            results = [None] * num_pages
+            completed_count = 0
+            
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                future_to_page = {
+                    executor.submit(self.process_page_parallel, task): task["page_num"] 
+                    for task in p_tasks
+                }
+                
+                for future in as_completed(future_to_page):
+                    p_num = future_to_page[future]
+                    completed_count += 1
+                    try:
+                        data = future.result()
+                        results[p_num] = data
+                        # Yield immediate progress update
+                        yield p_num, {"type": "progress", "current": completed_count, "total": num_pages, "page": p_num + 1}
+                    except Exception as exc:
+                        print(f"    [Page {p_num+1} Fatal Error] {exc}")
+                        results[p_num] = None
+
+            # Yield final data in order
+            for page_num, data in enumerate(results):
                 if data and data.get("is_wayleave_consent_form"):
-                    yield page_num, data
+                    yield page_num, {"type": "data", "page_num": page_num, "data": data}
                 elif data:
-                    print(f"    [Skipping Page {page_num+1}] Not a Wayleave Consent Form (ID/Deed/Map/etc.)")
+                    print(f"    [Skipping Page {page_num+1}] Not a Wayleave Consent Form")
+                    yield page_num, {"type": "skip", "page_num": page_num}
+                    
         except Exception as e:
             print(f"[Extractor Error] {e}")
             return
@@ -69,16 +115,21 @@ class ConsentExtractor:
                 doc.close()
                 print(f"  Closed PDF handle for {pdf_path}")
 
-    def process_page(self, doc, page_num):
-        """
-        Extracts details from a specific page.
-        Returns: data_json or None if failed.
-        """
+    def process_page_parallel(self, task):
+        """Helper for parallel execution"""
+        page_num = task["page_num"]
+        img_data = task["img_data"]
+        # Simplified metadata passing
+        data = self.execute_gemini_request(img_data, page_num)
+        if data:
+            data["page_width"] = task["page_width"]
+            data["page_height"] = task["page_height"]
+            data["rotation"] = task["rotation"]
+        return data
+
+    def execute_gemini_request(self, img_data, page_num):
+        """Core Gemini call logic separated for parallel use"""
         try:
-            page = doc[page_num]
-            pix = page.get_pixmap(dpi=150) # 150 DPI is enough for text reading
-            img_data = pix.tobytes("png")
-            
             prompt = """
             Determine if this image is a 'WAYLEAVE CONSENT FORM'. 
             Standard forms have 'WAYLEAVE CONSENT FORM' as a title and fields for Land owner, Plot No, etc. 
@@ -92,7 +143,7 @@ class ConsentExtractor:
               "Project Name": "Name of project/village",
               "Constituency": "Constituency name",
               "County": "County name",
-              "Plot No": "Title/Plot number",
+              "Plot No": "EXTRACT ONLY THE DIGITS (e.g. if 'Plot 45/A' return '45', if 'LR 123' return '123')",
               "Owned by": "Full name of the land owner listed at the top",
               "Signed by": "Full name of the person who signed as Proprietor/Occupier (NOT witness)",
               "Relationship": "Relationship of signer to owner (e.g. SELF, WIFE, SON, HUSBAND)",
@@ -104,9 +155,10 @@ class ConsentExtractor:
               "sketch_box_1000": [ymin, xmin, ymax, xmax]
             }
 
-            Rules for Spatial Detection:
-            - If is_wayleave_consent_form is false, return null for all other fields except is_wayleave_consent_form.
-            - If true, identify the empty rectangular box in the bottom half intended for a site sketch and return its bounding box as [ymin, xmin, ymax, xmax] on a scale of 0-1000.
+            Rules:
+            - If is_wayleave_consent_form is false, return null for all fields except is_wayleave_consent_form.
+            - For 'Plot No', extract ONLY the numerical digits. Remove all text prefixes or suffixes.
+            - For 'sketch_box_1000', return its bounding box as [ymin, xmin, ymax, xmax] on a scale of 0-1000.
             """
             
             import time
@@ -121,17 +173,15 @@ class ConsentExtractor:
                             types.Part.from_bytes(data=img_data, mime_type="image/png")
                         ]
                     )
-                    break # Success
+                    break 
                 except Exception as e:
                     err_msg = str(e).upper()
-                    # Retry on rate limits or service unavailability
                     if any(x in err_msg for x in ["503", "UNAVAILABLE", "RATE_LIMIT", "QUOTA"]):
                         if attempt < retries - 1:
-                            wait_time = (attempt + 1) * 3  # 3s, 6s, 9s, 12s...
+                            wait_time = (attempt + 1) * 3
                             print(f"    [Retry {attempt+1}] Gemini API busy/unavailable: {e}. Waiting {wait_time}s...")
                             time.sleep(wait_time)
                             continue
-                    
                     print(f"    [Page {page_num+1} Error] Failed: {e}")
                     return None
 
@@ -139,7 +189,6 @@ class ConsentExtractor:
                 return None
                 
             text = response.text.strip()
-            # More robust JSON cleaning
             if "```json" in text:
                 text = text.split("```json")[-1].split("```")[0].strip()
             elif "```" in text:
@@ -151,10 +200,28 @@ class ConsentExtractor:
                 print(f"    [Page {page_num+1} Error] Invalid JSON from AI: {je}\nResponse text: {text}")
                 return None
             
-            # Add PDF page dimensions for coordinate conversion
-            data["page_width"] = page.rect.width
-            data["page_height"] = page.rect.height
-            data["rotation"] = page.rotation
+            return data
+        except Exception as e:
+            print(f"    [Page {page_num+1} Error] {e}")
+            return None
+
+    def process_page(self, doc, page_num):
+        """
+        Extracts details from a specific page.
+        Returns: data_json or None if failed.
+        """
+        try:
+            page = doc[page_num]
+            pix = page.get_pixmap(dpi=150) # 150 DPI is enough for text reading
+            img_data = pix.tobytes("png")
+            
+            data = self.execute_gemini_request(img_data, page_num)
+            
+            if data:
+                # Add PDF page dimensions for coordinate conversion
+                data["page_width"] = page.rect.width
+                data["page_height"] = page.rect.height
+                data["rotation"] = page.rotation
             
             return data
         except Exception as e:

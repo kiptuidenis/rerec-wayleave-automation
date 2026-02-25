@@ -143,6 +143,10 @@ export default function App() {
     }, [selectedId, results, consentFiles]);
 
     // --- HANDLERS ---
+    // Progress State
+    const [progress, setProgress] = useState(0);
+    const [statusMsg, setStatusMsg] = useState("");
+
     const handleExtract = async () => {
         if (consentFiles.length === 0) {
             setError("Please upload at least one consent form.");
@@ -151,17 +155,63 @@ export default function App() {
 
         setLoading(true);
         setError(null);
+        setProgress(0);
+        setStatusMsg("Initializing extraction...");
+        setResults([]);
+
         try {
             const formData = new FormData();
             consentFiles.forEach(file => formData.append('files', file));
 
-            const res = await axios.post(`${API_BASE}/extract`, formData);
-            const data = res.data.results;
-            setResults(data);
-            if (data.length > 0) setSelectedId(data[0]._id);
-            setStep(2);
+            const response = await fetch(`${API_BASE}/extract`, {
+                method: 'POST',
+                body: formData,
+            });
+
+            if (!response.ok) throw new Error("Server error during extraction");
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let accumulatedResults = [];
+            let buffer = "";
+
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split("\n");
+                buffer = lines.pop(); // Keep partial line in buffer
+
+                for (const line of lines) {
+                    if (!line.trim()) continue;
+                    try {
+                        const event = JSON.parse(line);
+
+                        if (event.type === 'init') {
+                            setStatusMsg(`Extracted ${event.total_pages} pages. Analyzing...`);
+                        } else if (event.type === 'progress') {
+                            const percent = Math.round((event.current / event.total) * 100);
+                            setProgress(percent);
+                            setStatusMsg(`Analyzing Page ${event.page} of ${event.total}...`);
+                        } else if (event.type === 'data') {
+                            accumulatedResults.push(event.data);
+                            // Optionally update results partially for "live" appearance, 
+                            // but usually safer to wait for complete to avoid grid flickering.
+                        } else if (event.type === 'error') {
+                            throw new Error(event.message);
+                        } else if (event.type === 'complete') {
+                            setResults([...accumulatedResults]);
+                            if (accumulatedResults.length > 0) setSelectedId(accumulatedResults[0]._id);
+                            setStep(2);
+                        }
+                    } catch (e) {
+                        console.error("Error parsing stream line:", e);
+                    }
+                }
+            }
         } catch (err) {
-            setError("Extraction failed. Ensure the backend is running at http://localhost:8000.");
+            setError(err.message || "Extraction failed. Ensure the backend is running.");
             console.error(err);
         } finally {
             setLoading(false);
@@ -176,6 +226,9 @@ export default function App() {
 
         setIsFinalizing(true);
         setError(null);
+        setProgress(0);
+        setStatusMsg("Preparing package generation...");
+
         try {
             const formData = new FormData();
             formData.append('extraction_results', JSON.stringify(results));
@@ -183,20 +236,58 @@ export default function App() {
             formData.append('excel_template', excelTemplate);
             consentFiles.forEach(file => formData.append('consent_pdfs', file));
 
-            const res = await axios.post(`${API_BASE}/finalize`, formData, {
-                responseType: 'blob'
+            const response = await fetch(`${API_BASE}/finalize`, {
+                method: 'POST',
+                body: formData,
             });
 
-            const url = window.URL.createObjectURL(new Blob([res.data]));
-            const link = document.createElement('a');
-            link.href = url;
-            link.setAttribute('download', 'Wayleave_Final_Package.zip');
-            document.body.appendChild(link);
-            link.click();
-            setStep(3);
+            if (!response.ok) throw new Error("Server error during finalization");
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = "";
+
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split("\n");
+                buffer = lines.pop();
+
+                for (const line of lines) {
+                    if (!line.trim()) continue;
+                    try {
+                        const event = JSON.parse(line);
+
+                        if (event.type === 'status') {
+                            setStatusMsg(event.message);
+                        } else if (event.type === 'progress') {
+                            const percent = Math.round((event.current / event.total) * 100);
+                            setProgress(percent);
+                            setStatusMsg(event.message);
+                        } else if (event.type === 'error') {
+                            throw new Error(event.message);
+                        } else if (event.type === 'complete') {
+                            // Automatic download
+                            const downloadUrl = `${API_BASE}${event.download_url}`;
+                            const link = document.createElement('a');
+                            link.href = downloadUrl;
+                            link.setAttribute('download', event.filename);
+                            document.body.appendChild(link);
+                            link.click();
+                            document.body.removeChild(link);
+
+                            setStep(3);
+                        }
+                    } catch (e) {
+                        console.error("Error parsing finalization stream line:", e);
+                    }
+                }
+            }
         } catch (err) {
             console.error("Finalization Error:", err);
-            setError("Finalization failed. Please check the server logs.");
+            setError(err.message || "Finalization failed. Please check the server logs.");
         } finally {
             setIsFinalizing(false);
         }
@@ -386,9 +477,30 @@ export default function App() {
                                         <button
                                             onClick={handleExtract}
                                             disabled={loading || consentFiles.length === 0}
-                                            className="w-full bg-brand-primary hover:bg-blue-800 text-white font-bold py-4 rounded-xl flex items-center justify-center space-x-3 transition-all shadow-md active:transform active:scale-[0.99] disabled:opacity-40"
+                                            className="w-full bg-brand-primary hover:bg-blue-800 text-white font-bold py-4 rounded-xl flex flex-col items-center justify-center transition-all shadow-md active:transform active:scale-[0.99] disabled:opacity-40 overflow-hidden relative"
                                         >
-                                            {loading ? <Loader2 className="animate-spin" size={20} /> : <><Search size={20} /> <span>Begin Cognitive Extraction</span></>}
+                                            {loading ? (
+                                                <div className="w-full px-8 flex flex-col items-center">
+                                                    <div className="flex items-center space-x-3 mb-2">
+                                                        <Loader2 className="animate-spin" size={18} />
+                                                        <span className="text-sm">{statusMsg}</span>
+                                                    </div>
+                                                    <div className="w-full h-1.5 bg-white/20 rounded-full overflow-hidden">
+                                                        <motion.div
+                                                            className="h-full bg-white"
+                                                            initial={{ width: 0 }}
+                                                            animate={{ width: `${progress}%` }}
+                                                            transition={{ duration: 0.5 }}
+                                                        />
+                                                    </div>
+                                                    <span className="text-[10px] mt-1 opacity-70 uppercase tracking-widest font-bold">{progress}% Complete</span>
+                                                </div>
+                                            ) : (
+                                                <div className="flex items-center space-x-3">
+                                                    <Search size={20} />
+                                                    <span>Begin Cognitive Extraction</span>
+                                                </div>
+                                            )}
                                         </button>
                                     </div>
                                 </div>
@@ -424,9 +536,28 @@ export default function App() {
                                         <button
                                             onClick={handleFinalize}
                                             disabled={isFinalizing}
-                                            className="bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-2.5 rounded-lg font-bold uppercase tracking-wider text-[11px] flex items-center space-x-2 shadow-sm transition-all"
+                                            className="bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-2.5 rounded-lg font-bold uppercase tracking-wider text-[11px] flex items-center justify-center min-w-[180px] shadow-sm transition-all relative overflow-hidden"
                                         >
-                                            {isFinalizing ? <Loader2 className="animate-spin" size={16} /> : <><ShieldCheck size={16} /> <span>Generate Package</span></>}
+                                            {isFinalizing ? (
+                                                <div className="w-full flex flex-col items-center">
+                                                    <div className="flex items-center space-x-2 mb-1">
+                                                        <Loader2 className="animate-spin" size={12} />
+                                                        <span className="text-[9px] truncate max-w-[140px]">{statusMsg}</span>
+                                                    </div>
+                                                    <div className="w-full h-1 bg-white/20 rounded-full overflow-hidden">
+                                                        <motion.div
+                                                            className="h-full bg-white"
+                                                            initial={{ width: 0 }}
+                                                            animate={{ width: `${progress}%` }}
+                                                        />
+                                                    </div>
+                                                </div>
+                                            ) : (
+                                                <div className="flex items-center space-x-2">
+                                                    <ShieldCheck size={16} />
+                                                    <span>Generate Package</span>
+                                                </div>
+                                            )}
                                         </button>
                                     </div>
                                 </div>

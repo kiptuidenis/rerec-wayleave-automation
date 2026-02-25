@@ -24,6 +24,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Global registry for temporary downloads (used in local tool context)
+DOWNLOAD_REGISTRY = {}
+
 @app.get("/")
 def read_root():
     return {"status": "ok", "message": "Wayleave Automation API is running"}
@@ -32,58 +35,57 @@ def read_root():
 async def extract_documents(
     files: List[UploadFile] = File(...),
 ):
-    extractor = ConsentExtractor()
-    all_results = []
+    from fastapi.responses import StreamingResponse
+    import asyncio
     
-    # Store temp files to process
-    temp_files = []
-    try:
-        for file in files:
-            suffix = os.path.splitext(file.filename)[1]
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                shutil.copyfileobj(file.file, tmp)
-                temp_files.append({"name": file.filename, "path": tmp.name})
-        
-        # We can use ThreadPoolExecutor here for parallel extraction if needed, 
-        # but for now, let's keep it simple or reuse the logic.
-        # Note: ConsentExtractor.extract_details is a generator.
-        
-        for item in temp_files:
-            for page_num, data in extractor.extract_details(item["path"]):
-                if data:
-                    row_id = f"{item['name']}_p{page_num}"
-                    data["_id"] = row_id
-                    data["_file_name"] = item["name"]
-                    data["_page_num"] = page_num
-                    # We also need the file content later, but for now we'll just store the path
-                    # Actually, for a stateless API, we might need a better way.
-                    # But since this is a local-ish tool, we can store in a global dict or temp dir.
-                    all_results.append(data)
+    extractor = ConsentExtractor()
+    
+    async def event_generator():
+        temp_files = []
+        try:
+            # Prepare all files first
+            for file in files:
+                suffix = os.path.splitext(file.filename)[1]
+                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                    shutil.copyfileobj(file.file, tmp)
+                    temp_files.append({"name": file.filename, "path": tmp.name})
+            
+            for item in temp_files:
+                # Yield filename for context
+                yield json.dumps({"type": "file_start", "filename": item["name"]}) + "\n"
+                
+                # extractor.extract_details is now yielding (page_num, event_dict)
+                for page_num, event in extractor.extract_details(item["path"]):
+                    if event["type"] == "data":
+                        # Enrich data with metadata
+                        data = event["data"]
+                        data["_id"] = f"{item['name']}_p{page_num}"
+                        data["_file_name"] = item["name"]
+                        data["_page_num"] = page_num
+                        event["data"] = data
                     
-        return {"results": all_results}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        # Note: In a real app we'd clean up, but we need these files for finalization?
-        # Better strategy: Frontend sends the files back or we use a session-based storage.
-        # For this demo, let's assume we clean up and the frontend sends files per request.
-        for item in temp_files:
-            if os.path.exists(item["path"]):
-                # On Windows, file handles can take a moment to release.
-                # Adding a small retry loop for deletion.
-                import time
-                for i in range(3):
-                    try:
-                        os.remove(item["path"])
-                        break
-                    except PermissionError:
-                        if i < 2:
-                            time.sleep(0.3)
-                        else:
-                            print(f"    [Cleanup Warning] Could not delete temp file {item['path']}: Access Denied")
-                    except Exception as e:
-                        print(f"    [Cleanup Warning] Error deleting {item['path']}: {e}")
-                        break
+                    yield json.dumps(event) + "\n"
+                    # Small sleep to ensure the message is flushed and UI can keep up
+                    await asyncio.sleep(0.01)
+
+            yield json.dumps({"type": "complete"}) + "\n"
+            
+        except Exception as e:
+            yield json.dumps({"type": "error", "message": str(e)}) + "\n"
+        finally:
+            # Robust cleanup
+            for item in temp_files:
+                if os.path.exists(item["path"]):
+                    for i in range(3):
+                        try:
+                            os.remove(item["path"])
+                            break
+                        except PermissionError:
+                            await asyncio.sleep(0.5)
+                        except Exception:
+                            break
+
+    return StreamingResponse(event_generator(), media_type="application/x-ndjson")
 
 @app.post("/finalize")
 async def finalize_project(
@@ -93,99 +95,141 @@ async def finalize_project(
     excel_template: UploadFile = File(...),
     consent_pdfs: List[UploadFile] = File(...)
 ):
-    """
-    Combines everything: 
-    1. Re-processes the extraction results (which might be edited).
-    2. Matches against site plan.
-    3. Overlays snippets.
-    4. Updates Excel.
-    5. Returns a ZIP containing everything.
-    """
-    try:
-        results = json.loads(extraction_results)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid extraction_results JSON")
-
-    temp_dir = tempfile.mkdtemp()
+    from fastapi.responses import StreamingResponse
+    import asyncio
+    import uuid
     
     try:
-        # Save site plan
-        site_plan_path = os.path.join(temp_dir, "master_site_plan.pdf")
-        with open(site_plan_path, "wb") as f:
-            shutil.copyfileobj(site_plan.file, f)
-        
-        # Save excel template
-        excel_path = os.path.join(temp_dir, "template.xlsx")
-        with open(excel_path, "wb") as f:
-            shutil.copyfileobj(excel_template.file, f)
+        results_list = json.loads(extraction_results)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid extraction_results JSON")
+    
+    async def event_generator():
+        temp_dir = tempfile.mkdtemp()
+        file_id = str(uuid.uuid4())
+        try:
+            yield json.dumps({"type": "status", "message": "Preparing files..."}) + "\n"
             
-        # Save consent PDFs (to use during overlay)
-        consent_map = {}
-        for c_pdf in consent_pdfs:
-            c_path = os.path.join(temp_dir, c_pdf.filename)
-            with open(c_path, "wb") as f:
-                shutil.copyfileobj(c_pdf.file, f)
-            consent_map[c_pdf.filename] = c_path
-
-        # Initialize Locator
-        locator = SitePlanLocator(site_plan_path)
-        
-        output_zip_path = os.path.join(temp_dir, "results.zip")
-        output_excel_buffer = BytesIO()
-        
-        with zipfile.ZipFile(output_zip_path, "w", zipfile.ZIP_DEFLATED) as zip_file:
-            for row in results:
-                name = row.get("Signed by") or row.get("proprietor_name")
-                title = row.get("Plot No") or row.get("title_number")
-                box = row.get("sketch_box_1000")
-                f_name = row.get("_file_name")
-                p_num = row.get("_page_num")
-                temp_path = consent_map.get(f_name)
-
-                if name and box and temp_path:
-                    match = locator.search(name, title)
-                    if match:
-                        snip_path = os.path.join(temp_dir, f"snip_{row['_id']}.png")
-                        out_pdf_path = os.path.join(temp_dir, f"proc_{row['_id']}.pdf")
-                        
-                        box_w = box[3] - box[1]
-                        box_h = box[2] - box[0]
-                        aspect_ratio = box_w / box_h if box_h != 0 else 1.0
-                        
-                        locator.get_snippet(match, snip_path, aspect_ratio=aspect_ratio)
-                        success = PDFProcessor.overlay_snippet(temp_path, snip_path, box, out_pdf_path, page_index=p_num, rotation=row.get("rotation", 0))
-                        
-                        if success and os.path.exists(out_pdf_path):
-                            safe_title = str(title).replace('/', '_').replace('\\', '_')
-                            zip_name = f"{os.path.splitext(f_name)[0]}_P{p_num+1}_{safe_title}.pdf"
-                            zip_file.write(out_pdf_path, zip_name)
+            # Save files to temp dir
+            site_plan_path = os.path.join(temp_dir, "master_site_plan.pdf")
+            with open(site_plan_path, "wb") as f:
+                shutil.copyfileobj(site_plan.file, f)
             
-            # Update Excel Template
-            with open(excel_path, "rb") as f:
-                ExcelWriter.append_data(f, results, output_excel_buffer)
+            excel_path = os.path.join(temp_dir, "template.xlsx")
+            with open(excel_path, "wb") as f:
+                shutil.copyfileobj(excel_template.file, f)
+                
+            consent_map = {}
+            for c_pdf in consent_pdfs:
+                c_path = os.path.join(temp_dir, c_pdf.filename)
+                with open(c_path, "wb") as f:
+                    shutil.copyfileobj(c_pdf.file, f)
+                consent_map[c_pdf.filename] = c_path
+
+            yield json.dumps({"type": "status", "message": "Opening Site Plan..."}) + "\n"
+            locator = SitePlanLocator(site_plan_path)
             
-            # Add Excel to ZIP
-            zip_file.writestr("Wayleave_Master_List_Updated.xlsx", output_excel_buffer.getvalue())
+            output_zip_path = os.path.join(temp_dir, f"results_{file_id}.zip")
+            output_excel_buffer = BytesIO()
+            
+            total = len(results_list)
+            processed = 0
+            
+            with zipfile.ZipFile(output_zip_path, "w", zipfile.ZIP_DEFLATED) as zip_file:
+                for row in results_list:
+                    processed += 1
+                    name = row.get("Signed by") or row.get("proprietor_name")
+                    title = row.get("Plot No") or row.get("title_number")
+                    
+                    yield json.dumps({
+                        "type": "progress", 
+                        "current": processed, 
+                        "total": total, 
+                        "message": f"Processing {name or title or 'page'}..."
+                    }) + "\n"
+                    
+                    box = row.get("sketch_box_1000")
+                    f_name = row.get("_file_name")
+                    p_num = row.get("_page_num")
+                    temp_path = consent_map.get(f_name)
 
-        # Clean up locator document
-        locator.close()
+                    if name and box and temp_path:
+                        match = locator.search(name, title)
+                        if match:
+                            snip_path = os.path.join(temp_dir, f"snip_{row['_id']}.png")
+                            out_pdf_path = os.path.join(temp_dir, f"proc_{row['_id']}.pdf")
+                            
+                            box_w = box[3] - box[1]
+                            box_h = box[2] - box[0]
+                            aspect_ratio = box_w / box_h if box_h != 0 else 1.0
+                            
+                            locator.get_snippet(match, snip_path, aspect_ratio=aspect_ratio)
+                            success = PDFProcessor.overlay_snippet(temp_path, snip_path, box, out_pdf_path, page_index=p_num, rotation=row.get("rotation", 0))
+                            
+                            if success and os.path.exists(out_pdf_path):
+                                safe_title = str(title).replace('/', '_').replace('\\', '_')
+                                zip_name = f"{os.path.splitext(f_name)[0]}_P{p_num+1}_{safe_title}.pdf"
+                                zip_file.write(out_pdf_path, zip_name)
+                    
+                    await asyncio.sleep(0.01)
 
-        # Schedule cleanup of the entire temp directory
-        background_tasks.add_task(shutil.rmtree, temp_dir)
+                yield json.dumps({"type": "status", "message": "Updating Excel List..."}) + "\n"
+                with open(excel_path, "rb") as f:
+                    ExcelWriter.append_data(f, results_list, output_excel_buffer)
+                
+                zip_file.writestr("Wayleave_Master_List_Updated.xlsx", output_excel_buffer.getvalue())
 
-        return FileResponse(
-            output_zip_path, 
-            media_type="application/zip", 
-            filename="Wayleave_Automation_Results.zip"
-        )
+            locator.close()
+            
+            # Register for download
+            DOWNLOAD_REGISTRY[file_id] = {
+                "path": output_zip_path,
+                "dir": temp_dir
+            }
+            
+            yield json.dumps({
+                "type": "complete", 
+                "download_url": f"/download/{file_id}",
+                "filename": "Wayleave_Automation_Results.zip"
+            }) + "\n"
 
-    except Exception as e:
-        import traceback
-        error_msg = f"Finalization Error: {str(e)}\n{traceback.format_exc()}"
-        print(error_msg)
-        if 'temp_dir' in locals() and os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir)
-        raise HTTPException(status_code=500, detail=error_msg)
+        except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
+            print(f"Finalization Error: {e}\n{error_details}")
+            yield json.dumps({"type": "error", "message": str(e)}) + "\n"
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir)
+
+    return StreamingResponse(event_generator(), media_type="application/x-ndjson")
+
+@app.get("/download/{file_id}")
+async def download_file(file_id: str, background_tasks: BackgroundTasks):
+    if file_id not in DOWNLOAD_REGISTRY:
+        raise HTTPException(status_code=404, detail="File not found or expired")
+    
+    item = DOWNLOAD_REGISTRY[file_id]
+    path = item["path"]
+    temp_dir = item["dir"]
+    
+    # Schedule cleanup after download
+    def cleanup():
+        import time
+        time.sleep(10) # Wait for download to start/finish
+        if os.path.exists(temp_dir):
+            try:
+                shutil.rmtree(temp_dir)
+            except Exception: pass
+        if file_id in DOWNLOAD_REGISTRY:
+            del DOWNLOAD_REGISTRY[file_id]
+
+    background_tasks.add_task(cleanup)
+    
+    return FileResponse(
+        path,
+        media_type="application/zip",
+        filename="Wayleave_Automation_Results.zip"
+    )
 
 @app.post("/preview")
 async def get_preview(

@@ -2,9 +2,14 @@ import os
 import io
 import json
 import fitz  # PyMuPDF
+# Silence MuPDF xref/format spam for slightly corrupted PDFs
+fitz.TOOLS.mupdf_display_errors(False)
 from google import genai
 from google.genai import types
 from thefuzz import fuzz
+import jellyfish
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 from dotenv import load_dotenv
 from openpyxl import load_workbook
 from openpyxl.styles import Font, Border, Alignment
@@ -55,15 +60,7 @@ class ConsentExtractor:
         
         doc = None
         try:
-            # Pre-validation
-            try:
-                doc = fitz.open(pdf_path)
-                if doc.is_closed or doc.page_count == 0:
-                    raise Exception("PDF is empty or corrupted")
-            except Exception as e:
-                yield 0, {"type": "error", "message": f"Invalid PDF file: {str(e)}"}
-                return
-
+            doc = fitz.open(pdf_path)
             num_pages = len(doc)
             # Pre-extract images to avoid threading issues with fitz.Document
             # (though we usually open it per-thread or keep it global if thread-safe)
@@ -89,7 +86,8 @@ class ConsentExtractor:
             results = [None] * num_pages
             completed_count = 0
             
-            with ThreadPoolExecutor(max_workers=5) as executor:
+            # Reduced max_workers to 3 to prevent socket exhaustion on weak connections
+            with ThreadPoolExecutor(max_workers=3) as executor:
                 future_to_page = {
                     executor.submit(self.process_page_parallel, task): task["page_num"] 
                     for task in p_tasks
@@ -170,8 +168,6 @@ class ConsentExtractor:
             """
             
             import time
-            import random
-            
             retries = 5
             response = None
             for attempt in range(retries):
@@ -186,19 +182,23 @@ class ConsentExtractor:
                     break 
                 except Exception as e:
                     err_msg = str(e).upper()
-                    # Retry logic for transient errors
-                    is_transient = any(x in err_msg for x in ["503", "504", "500", "UNAVAILABLE", "RATE_LIMIT", "QUOTA", "DEADLINE_EXCEEDED"])
+                    # Broader error matching for networking issues
+                    is_network_error = any(x in err_msg for x in [
+                        "503", "UNAVAILABLE", "RATE_LIMIT", "QUOTA", 
+                        "10053", "10054", "11001", "SSL", "EOF", 
+                        "CONNECTION", "ABORTED", "RESET", "GETADDRINFO"
+                    ])
                     
-                    if is_transient and attempt < retries - 1:
-                        # Exponential backoff with jitter
-                        wait_time = (2 ** attempt) + (random.random() * 2)
-                        print(f"    [Retry {attempt+1}/{retries}] Gemini API issue: {e}. Waiting {wait_time:.1f}s...")
-                        time.sleep(wait_time)
-                        continue
+                    if is_network_error:
+                        if attempt < retries - 1:
+                            # Exponential backoff: 2s, 4s, 8s, 16s...
+                            wait_time = 2 ** (attempt + 1)
+                            print(f"    [Retry {attempt+1}] Networking/API issue on Page {page_num+1}: {e}. Backing off {wait_time}s...")
+                            time.sleep(wait_time)
+                            continue
                     
-                    # Log final failure for this page but allow the process to continue
                     print(f"    [Page {page_num+1} Final Failure] {e}")
-                    return {"is_wayleave_consent_form": False, "_error": str(e)}
+                    return None
 
             if not response or not response.text:
                 return None
@@ -273,7 +273,7 @@ class SitePlanLocator:
         best_match = None
         best_score = 0
         
-        # 1. Search by Name
+        # 1. Search by Name (Hybrid TF-IDF N-Gram + Phonetic)
         if name:
             print(f"  Searching for Name '{name}'...", end="", flush=True)
             
@@ -281,48 +281,100 @@ class SitePlanLocator:
             name_parts = [p for p in name.lower().split() if len(p) > 2]
             if not name_parts: return None
             
+            clean_target_name = " ".join(name_parts)
+            
+            # Pre-calculate phonetic codes for the target name parts
+            # Clean non-alphabetical chars as jellyfish match_rating_codex strictly requires them
+            target_phonetics = [jellyfish.match_rating_codex(re.sub(r'[^a-zA-Z]', '', p)) for p in name_parts if re.sub(r'[^a-zA-Z]', '', p)]
+            
+            # Initialize N-Gram vectorizer (2 to 3 character chunks)
+            vectorizer = TfidfVectorizer(analyzer='char_wb', ngram_range=(2, 3))
+            
             for page_num, page in enumerate(self.doc):
                 if page_num % 10 == 0: print(".", end="", flush=True)
                 
-                # We search for ALL parts to handle cases where one is misspelled or missing
-                # We collect every hit and score its surroundings
-                page_best_score = 0
-                page_best_rect = None
+                # Extract all text blocks on the page
+                blocks = page.get_text("dict")["blocks"]
+                page_texts = []
+                page_rects = []
                 
-                for part in name_parts:
-                    hits = page.search_for(part)
-                    for hit in hits:
-                        # Expansion: Get text around the hit to identify the full name block
-                        search_box = hit + (-200, -15, 200, 15) 
-                        text_block = page.get_textbox(search_box).replace("\n", " ").strip().lower()
-                        if not text_block: continue
-
-                        # THE 2-TOKEN RULE (Fuzzy):
-                        # Count how many of our unique name parts have a close fuzzy match in this block
-                        words_in_block = text_block.split()
-                        matches = 0
-                        for p in name_parts:
-                            # Check if part 'p' matches any word in the block fuzzy-wise
-                            if any(fuzz.ratio(p, w) > 85 for w in words_in_block):
-                                matches += 1
+                for b in blocks:
+                    if "lines" not in b: continue
+                    for l in b["lines"]:
+                        for s in l["spans"]:
+                            text = s["text"].strip().lower()
+                            if len(text) > 3: # Ignore tiny noise blocks
+                                page_texts.append(text)
+                                page_rects.append(fitz.Rect(s["bbox"]))
+                
+                if not page_texts:
+                    continue
+                    
+                # Vectorize the target name and all page texts together
+                # We fit on the page_texts + target to build the vocabulary
+                try:
+                    tfidf_matrix = vectorizer.fit_transform([clean_target_name] + page_texts)
+                except ValueError:
+                    continue # Handle empty vocabulary edge cases
+                    
+                target_vector = tfidf_matrix[0:1]
+                page_vectors = tfidf_matrix[1:]
+                
+                # Calculate N-Gram Cosine Similarity
+                cosine_similarities = cosine_similarity(target_vector, page_vectors).flatten()
+                
+                # Find the best matches on this page
+                for idx, n_gram_score in enumerate(cosine_similarities):
+                    # Proceed to Phonetic check if N-Gram score shows some promise (> 0.3)
+                    if n_gram_score > 0.3:
+                        candidate_text = page_texts[idx]
+                        candidate_parts = candidate_text.split()
                         
-                        if matches >= 2:
-                            score = fuzz.partial_token_set_ratio(name.lower(), text_block)
-                            if score > page_best_score:
-                                page_best_score = score
-                                page_best_rect = hit
-                
-                if page_best_score > best_score:
-                    best_score = page_best_score
-                    best_match = {"page": page_num, "rect": page_best_rect, "method": f"name_match ({name}) with {best_score}% confidence"}
+                        # Calculate Phonetic Score
+                        phonetic_matches = 0
+                        for t_phonetic in target_phonetics:
+                            # Clean candidate parts before phonetic matching
+                            for c_part in candidate_parts:
+                                clean_c = re.sub(r'[^a-zA-Z]', '', c_part)
+                                if clean_c and jellyfish.match_rating_codex(clean_c) == t_phonetic:
+                                    phonetic_matches += 1
+                                    break # Matched this target phonetic once, move to next
+                        
+                        # Phonetic ratio: how many target parts sounded like the candidate parts?
+                        phonetic_score = (phonetic_matches / len(target_phonetics)) if target_phonetics else 0
+                        
+                        # Fusion Score: 
+                        # N-Grams are highly reliable for OCR, Phonetics catch human spelling errors.
+                        # If N-Gram is extremely high (>0.85), let it override. Otherwise blend them.
+                        if n_gram_score > 0.85:
+                            fused_score = n_gram_score
+                        else:
+                            fused_score = (phonetic_score * 0.5) + (n_gram_score * 0.5)
+                        
+                        # Convert to 0-100 scale for consistency with old logic
+                        fused_score_100 = fused_score * 100
+
+                        
+                        if fused_score_100 > best_score:
+                            best_score = fused_score_100
+                            best_match = {
+                                "page": page_num, 
+                                "rect": page_rects[idx], 
+                                "method": f"hybrid_match ({name}) fused_score: {best_score:.1f}% (N-Gram: {n_gram_score:.2f}, Phonetic: {phonetic_score:.2f})"
+                            }
                         
             print(" Done.")
 
-        if best_match and best_score > 80:
+        # Require a solid fused score. 
+        # A score > 45 usually means at least one strong phonetic match + decent OCR overlap
+        if best_match and best_score > 45:
             return best_match
         
         # 2. Try Plot Number 
-        numbers = re.findall(r'\d+', title_number)
+        if not title_number:
+            return None
+            
+        numbers = re.findall(r'\d+', str(title_number))
         if not numbers:
              return None
         

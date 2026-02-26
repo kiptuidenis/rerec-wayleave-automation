@@ -51,49 +51,10 @@ export default function App() {
     const [excelTemplate, setExcelTemplate] = useState(null);
 
     const [results, setResults] = useState([]);
-    const [hasRecoveryData, setHasRecoveryData] = useState(false);
     const [hotData, setHotData] = useState([]);
     const [selectedId, setSelectedId] = useState(null);
     const [isFinalizing, setIsFinalizing] = useState(false);
     const [isExportingExcel, setIsExportingExcel] = useState(false);
-
-    // Persist results to localStorage
-    useEffect(() => {
-        if (results.length > 0) {
-            localStorage.setItem('wayleave_recovery_results', JSON.stringify(results));
-        }
-    }, [results]);
-
-    // Check for recovery data on mount
-    useEffect(() => {
-        const saved = localStorage.getItem('wayleave_recovery_results');
-        if (saved) {
-            try {
-                const parsed = JSON.parse(saved);
-                if (parsed && parsed.length > 0) {
-                    setHasRecoveryData(true);
-                }
-            } catch (e) {
-                localStorage.removeItem('wayleave_recovery_results');
-            }
-        }
-    }, []);
-
-    const handleResume = () => {
-        const saved = localStorage.getItem('wayleave_recovery_results');
-        if (saved) {
-            const parsed = JSON.parse(saved);
-            setResults(parsed);
-            if (parsed.length > 0) setSelectedId(parsed[0]._id);
-            setStep(2);
-            setHasRecoveryData(false);
-        }
-    };
-
-    const handleClearSession = () => {
-        localStorage.removeItem('wayleave_recovery_results');
-        setHasRecoveryData(false);
-    };
     const [previewUrl, setPreviewUrl] = useState(null);
     const [isPreviewLoading, setIsPreviewLoading] = useState(false);
     const [isLightboxOpen, setIsLightboxOpen] = useState(false);
@@ -235,16 +196,14 @@ export default function App() {
                             setProgress(percent);
                             setStatusMsg(`Analyzing Page ${event.page} of ${event.total}...`);
                         } else if (event.type === 'data') {
-                            setResults(prev => {
-                                const newResults = [...prev, event.data];
-                                return newResults;
-                            });
-                            if (accumulatedResults.length === 0) setSelectedId(event.data._id);
                             accumulatedResults.push(event.data);
+                            // Optionally update results partially for "live" appearance, 
+                            // but usually safer to wait for complete to avoid grid flickering.
                         } else if (event.type === 'error') {
-                            setError(event.message);
-                            // We don't throw here to allow partial results to be kept
+                            throw new Error(event.message);
                         } else if (event.type === 'complete') {
+                            setResults([...accumulatedResults]);
+                            if (accumulatedResults.length > 0) setSelectedId(accumulatedResults[0]._id);
                             setStep(2);
                         }
                     } catch (e) {
@@ -487,136 +446,101 @@ export default function App() {
                                 initial={{ opacity: 0, y: 20 }}
                                 animate={{ opacity: 1, y: 0 }}
                                 exit={{ opacity: 0, scale: 0.98 }}
-                                className="space-y-6"
+                                className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start"
                             >
-                                {hasRecoveryData && (
-                                    <motion.div
-                                        initial={{ opacity: 0, x: -20 }}
-                                        animate={{ opacity: 1, x: 0 }}
-                                        className="bg-amber-50 border border-amber-200 p-4 rounded-xl flex items-center justify-between shadow-sm"
-                                    >
-                                        <div className="flex items-center space-x-3">
-                                            <div className="p-2 bg-amber-100 rounded-lg text-amber-600">
-                                                <Zap size={20} />
+                                {/* Left Side: Configuration Cards */}
+                                <div className="lg:col-span-4 space-y-6">
+                                    <section className="card-shell p-6 bg-white overflow-hidden relative">
+                                        <div className="flex items-center space-x-3 mb-6">
+                                            <div className="p-2 bg-blue-50 rounded-lg text-blue-600">
+                                                <Database size={20} />
                                             </div>
-                                            <div>
-                                                <h4 className="text-sm font-bold text-amber-900 uppercase tracking-tight">Recoverable Session Found</h4>
-                                                <p className="text-[10px] text-amber-700 font-bold uppercase tracking-wider">You have previous extraction results saved. Resume where you left off?</p>
-                                            </div>
+                                            <h3 className="font-bold text-slate-800 tracking-tight">Project Resources</h3>
                                         </div>
-                                        <div className="flex items-center space-x-2">
-                                            <button
-                                                onClick={handleClearSession}
-                                                className="text-amber-700 hover:bg-amber-100 px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all"
-                                            >
-                                                Discard
-                                            </button>
-                                            <button
-                                                onClick={handleResume}
-                                                className="bg-amber-600 hover:bg-amber-700 text-white px-4 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider shadow-sm transition-all flex items-center space-x-2"
-                                            >
-                                                <ChevronRight size={14} />
-                                                <span>Resume Session</span>
-                                            </button>
+                                        <div className="space-y-4">
+                                            <FileUploadZone
+                                                label="Master Site Plan (PDF)"
+                                                file={sitePlanFile}
+                                                setFile={setSitePlanFile}
+                                                icon={<FileText size={18} />}
+                                            />
+                                            <FileUploadZone
+                                                label="Metadata Template (XLSX)"
+                                                file={excelTemplate}
+                                                setFile={setExcelTemplate}
+                                                icon={<TableIcon size={18} />}
+                                            />
                                         </div>
-                                    </motion.div>
-                                )}
+                                        <p className="mt-6 text-[11px] text-slate-400 font-medium leading-relaxed">
+                                            Upload the project's site plan and the Excel schema template to begin the automated extraction process.
+                                        </p>
+                                    </section>
+                                </div>
 
-                                <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-                                    {/* Left Side: Configuration Cards */}
-                                    <div className="lg:col-span-4 space-y-6">
-                                        <section className="card-shell p-6 bg-white overflow-hidden relative">
-                                            <div className="flex items-center space-x-3 mb-6">
-                                                <div className="p-2 bg-blue-50 rounded-lg text-blue-600">
-                                                    <Database size={20} />
-                                                </div>
-                                                <h3 className="font-bold text-slate-800 tracking-tight">Project Resources</h3>
+                                {/* Right Side: Payload Dropzone */}
+                                <div className="lg:col-span-8">
+                                    <div className="card-shell p-8 bg-white h-full flex flex-col">
+                                        <div className="mb-8">
+                                            <h3 className="text-xl font-bold text-slate-900 tracking-tight flex items-center space-x-3">
+                                                <FileUp className="text-brand-primary" size={24} />
+                                                <span>Document Payload</span>
+                                            </h3>
+                                            <p className="text-sm text-slate-500 mt-1">Select scanned consent forms for processing and metadata extraction.</p>
+                                        </div>
+
+                                        <label className="flex-1 flex flex-col items-center justify-center border-2 border-dashed border-slate-200 rounded-2xl p-12 hover:bg-slate-50 hover:border-brand-primary/40 transition-all cursor-pointer group mb-6 bg-slate-50/50">
+                                            <input type="file" multiple className="hidden" onChange={(e) => setConsentFiles(Array.from(e.target.files))} />
+                                            <div className="bg-white p-4 rounded-full shadow-sm border border-slate-200 group-hover:scale-110 transition-transform duration-300 mb-4">
+                                                <Upload className="text-slate-400 group-hover:text-brand-primary" size={32} />
                                             </div>
-                                            <div className="space-y-4">
-                                                <FileUploadZone
-                                                    label="Master Site Plan (PDF)"
-                                                    file={sitePlanFile}
-                                                    setFile={setSitePlanFile}
-                                                    icon={<FileText size={18} />}
-                                                />
-                                                <FileUploadZone
-                                                    label="Metadata Template (XLSX)"
-                                                    file={excelTemplate}
-                                                    setFile={setExcelTemplate}
-                                                    icon={<TableIcon size={18} />}
-                                                />
-                                            </div>
-                                            <p className="mt-6 text-[11px] text-slate-400 font-medium leading-relaxed">
-                                                Upload the project's site plan and the Excel schema template to begin the automated extraction process.
-                                            </p>
-                                        </section>
-                                    </div>
+                                            <p className="text-slate-900 font-bold text-lg">Click to Upload Documents</p>
+                                            <p className="text-slate-400 text-xs mt-2 uppercase tracking-widest font-bold">Standard PDF Format Only</p>
+                                        </label>
 
-                                    {/* Right Side: Payload Dropzone */}
-                                    <div className="lg:col-span-8">
-                                        <div className="card-shell p-8 bg-white h-full flex flex-col">
-                                            <div className="mb-8">
-                                                <h3 className="text-xl font-bold text-slate-900 tracking-tight flex items-center space-x-3">
-                                                    <FileUp className="text-brand-primary" size={24} />
-                                                    <span>Document Payload</span>
-                                                </h3>
-                                                <p className="text-sm text-slate-500 mt-1">Select scanned consent forms for processing and metadata extraction.</p>
-                                            </div>
-
-                                            <label className="flex-1 flex flex-col items-center justify-center border-2 border-dashed border-slate-200 rounded-2xl p-12 hover:bg-slate-50 hover:border-brand-primary/40 transition-all cursor-pointer group mb-6 bg-slate-50/50">
-                                                <input type="file" multiple className="hidden" onChange={(e) => setConsentFiles(Array.from(e.target.files))} />
-                                                <div className="bg-white p-4 rounded-full shadow-sm border border-slate-200 group-hover:scale-110 transition-transform duration-300 mb-4">
-                                                    <Upload className="text-slate-400 group-hover:text-brand-primary" size={32} />
-                                                </div>
-                                                <p className="text-slate-900 font-bold text-lg">Click to Upload Documents</p>
-                                                <p className="text-slate-400 text-xs mt-2 uppercase tracking-widest font-bold">Standard PDF Format Only</p>
-                                            </label>
-
-                                            {consentFiles.length > 0 && (
-                                                <div className="bg-blue-50/50 rounded-xl p-4 border border-blue-100 mb-8 items-center flex justify-between">
-                                                    <div className="flex items-center space-x-3">
-                                                        <div className="w-8 h-8 rounded-lg bg-white border border-blue-200 flex items-center justify-center text-blue-600 font-bold text-xs shadow-sm">
-                                                            {consentFiles.length}
-                                                        </div>
-                                                        <span className="text-xs font-bold text-blue-800 uppercase tracking-wider">Documents Ready for Extraction</span>
+                                        {consentFiles.length > 0 && (
+                                            <div className="bg-blue-50/50 rounded-xl p-4 border border-blue-100 mb-8 items-center flex justify-between">
+                                                <div className="flex items-center space-x-3">
+                                                    <div className="w-8 h-8 rounded-lg bg-white border border-blue-200 flex items-center justify-center text-blue-600 font-bold text-xs shadow-sm">
+                                                        {consentFiles.length}
                                                     </div>
-                                                    <div className="flex -space-x-2">
-                                                        {consentFiles.slice(0, 3).map((_, i) => (
-                                                            <div key={i} className="w-6 h-6 rounded-full border-2 border-white bg-slate-200" />
-                                                        ))}
+                                                    <span className="text-xs font-bold text-blue-800 uppercase tracking-wider">Documents Ready for Extraction</span>
+                                                </div>
+                                                <div className="flex -space-x-2">
+                                                    {consentFiles.slice(0, 3).map((_, i) => (
+                                                        <div key={i} className="w-6 h-6 rounded-full border-2 border-white bg-slate-200" />
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        <button
+                                            onClick={handleExtract}
+                                            disabled={loading || consentFiles.length === 0}
+                                            className="w-full bg-brand-primary hover:bg-blue-800 text-white font-bold py-4 rounded-xl flex flex-col items-center justify-center transition-all shadow-md active:transform active:scale-[0.99] disabled:opacity-40 overflow-hidden relative"
+                                        >
+                                            {loading ? (
+                                                <div className="w-full px-8 flex flex-col items-center">
+                                                    <div className="flex items-center space-x-3 mb-2">
+                                                        <Loader2 className="animate-spin" size={18} />
+                                                        <span className="text-sm">{statusMsg}</span>
                                                     </div>
+                                                    <div className="w-full h-1.5 bg-white/20 rounded-full overflow-hidden">
+                                                        <motion.div
+                                                            className="h-full bg-white"
+                                                            initial={{ width: 0 }}
+                                                            animate={{ width: `${progress}%` }}
+                                                            transition={{ duration: 0.5 }}
+                                                        />
+                                                    </div>
+                                                    <span className="text-[10px] mt-1 opacity-70 uppercase tracking-widest font-bold">{progress}% Complete</span>
+                                                </div>
+                                            ) : (
+                                                <div className="flex items-center space-x-3">
+                                                    <Search size={20} />
+                                                    <span>Begin Cognitive Extraction</span>
                                                 </div>
                                             )}
-
-                                            <button
-                                                onClick={handleExtract}
-                                                disabled={loading || consentFiles.length === 0}
-                                                className="w-full bg-brand-primary hover:bg-blue-800 text-white font-bold py-4 rounded-xl flex flex-col items-center justify-center transition-all shadow-md active:transform active:scale-[0.99] disabled:opacity-40 overflow-hidden relative"
-                                            >
-                                                {loading ? (
-                                                    <div className="w-full px-8 flex flex-col items-center">
-                                                        <div className="flex items-center space-x-3 mb-2">
-                                                            <Loader2 className="animate-spin" size={18} />
-                                                            <span className="text-sm">{statusMsg}</span>
-                                                        </div>
-                                                        <div className="w-full h-1.5 bg-white/20 rounded-full overflow-hidden">
-                                                            <motion.div
-                                                                className="h-full bg-white"
-                                                                initial={{ width: 0 }}
-                                                                animate={{ width: `${progress}%` }}
-                                                                transition={{ duration: 0.5 }}
-                                                            />
-                                                        </div>
-                                                        <span className="text-[10px] mt-1 opacity-70 uppercase tracking-widest font-bold">{progress}% Complete</span>
-                                                    </div>
-                                                ) : (
-                                                    <div className="flex items-center space-x-3">
-                                                        <Search size={20} />
-                                                        <span>Begin Cognitive Extraction</span>
-                                                    </div>
-                                                )}
-                                            </button>
-                                        </div>
+                                        </button>
                                     </div>
                                 </div>
                             </motion.div>

@@ -248,8 +248,20 @@ async def finalize_project(
             error_details = traceback.format_exc()
             print(f"Finalization Error: {e}\n{error_details}")
             yield json.dumps({"type": "error", "message": str(e)}) + "\n"
+            
+            # Ensure open documents are closed before cleaning up
+            if 'locator' in locals() and hasattr(locator, 'close'):
+                locator.close()
+                
             if os.path.exists(temp_dir):
-                shutil.rmtree(temp_dir)
+                for _ in range(3):
+                    try:
+                        shutil.rmtree(temp_dir)
+                        break
+                    except PermissionError:
+                        await asyncio.sleep(0.5)
+                    except Exception:
+                        break
 
     return StreamingResponse(event_generator(), media_type="application/x-ndjson")
 

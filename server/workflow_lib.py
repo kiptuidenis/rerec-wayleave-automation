@@ -62,48 +62,49 @@ class ConsentExtractor:
         try:
             doc = fitz.open(pdf_path)
             num_pages = len(doc)
-            # Pre-extract images to avoid threading issues with fitz.Document
-            # (though we usually open it per-thread or keep it global if thread-safe)
-            # For efficiency, we'll extract pixmaps in the main thread and process Gemini in parallel.
             
-            p_tasks = []
-            for page_num in range(num_pages):
-                page = doc[page_num]
-                pix = page.get_pixmap(dpi=150)
-                img_data = pix.tobytes("png")
-                p_tasks.append({
-                    "page_num": page_num,
-                    "img_data": img_data,
-                    "page_width": page.rect.width,
-                    "page_height": page.rect.height,
-                    "rotation": page.rotation
-                })
-            doc.close() # Close here since we have the image data
-            doc = None
-            print(f"  Extracted {num_pages} pages. Starting parallel analysis...")
-            yield page_num, {"type": "init", "total_pages": num_pages}
+            print(f"  Extracted {num_pages} pages. Starting chunked parallel analysis...")
+            yield 0, {"type": "init", "total_pages": num_pages}
 
             results = [None] * num_pages
             completed_count = 0
+            chunk_size = 20 # Process 20 pages at a time to keep RAM flat
             
-            # Reduced max_workers to 3 to prevent socket exhaustion on weak connections
-            with ThreadPoolExecutor(max_workers=3) as executor:
-                future_to_page = {
-                    executor.submit(self.process_page_parallel, task): task["page_num"] 
-                    for task in p_tasks
-                }
+            for chunk_start in range(0, num_pages, chunk_size):
+                chunk_end = min(chunk_start + chunk_size, num_pages)
+                p_tasks = []
                 
-                for future in as_completed(future_to_page):
-                    p_num = future_to_page[future]
-                    completed_count += 1
-                    try:
-                        data = future.result()
-                        results[p_num] = data
-                        # Yield immediate progress update
-                        yield p_num, {"type": "progress", "current": completed_count, "total": num_pages, "page": p_num + 1}
-                    except Exception as exc:
-                        print(f"    [Page {p_num+1} Fatal Error] {exc}")
-                        results[p_num] = None
+                # Pre-extract images ONLY for this chunk
+                for page_num in range(chunk_start, chunk_end):
+                    page = doc[page_num]
+                    pix = page.get_pixmap(dpi=150)
+                    img_data = pix.tobytes("png")
+                    p_tasks.append({
+                        "page_num": page_num,
+                        "img_data": img_data,
+                        "page_width": page.rect.width,
+                        "page_height": page.rect.height,
+                        "rotation": page.rotation
+                    })
+                
+                # Process the chunk in parallel using threads
+                with ThreadPoolExecutor(max_workers=10) as executor:
+                    future_to_page = {
+                        executor.submit(self.process_page_parallel, task): task["page_num"] 
+                        for task in p_tasks
+                    }
+                    
+                    for future in as_completed(future_to_page):
+                        p_num = future_to_page[future]
+                        completed_count += 1
+                        try:
+                            data = future.result()
+                            results[p_num] = data
+                            # Yield immediate progress update
+                            yield p_num, {"type": "progress", "current": completed_count, "total": num_pages, "page": p_num + 1}
+                        except Exception as exc:
+                            print(f"    [Page {p_num+1} Fatal Error] {exc}")
+                            results[p_num] = None
 
             # Yield final data in order
             for page_num, data in enumerate(results):

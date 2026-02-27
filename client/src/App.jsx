@@ -58,7 +58,39 @@ export default function App() {
     const [previewUrl, setPreviewUrl] = useState(null);
     const [isPreviewLoading, setIsPreviewLoading] = useState(false);
     const [isLightboxOpen, setIsLightboxOpen] = useState(false);
+    const [skippedCount, setSkippedCount] = useState(0);
     const [lightboxZoom, setLightboxZoom] = useState(1);
+
+    const [extractTimeElapsed, setExtractTimeElapsed] = useState(0);
+    const [finalizeTimeElapsed, setFinalizeTimeElapsed] = useState(0);
+    const [totalPages, setTotalPages] = useState(0);
+
+    // Timers
+    useEffect(() => {
+        let timer;
+        if (loading) {
+            timer = setInterval(() => setExtractTimeElapsed(prev => prev + 1), 1000);
+        } else {
+            clearInterval(timer);
+        }
+        return () => clearInterval(timer);
+    }, [loading]);
+
+    useEffect(() => {
+        let timer;
+        if (isFinalizing) {
+            timer = setInterval(() => setFinalizeTimeElapsed(prev => prev + 1), 1000);
+        } else {
+            clearInterval(timer);
+        }
+        return () => clearInterval(timer);
+    }, [isFinalizing]);
+
+    const formatTimer = (totalSeconds) => {
+        const m = Math.floor(totalSeconds / 60);
+        const s = totalSeconds % 60;
+        return `${m}:${s.toString().padStart(2, '0')}`;
+    };
 
     // Close lightbox on Escape key
     useEffect(() => {
@@ -81,7 +113,8 @@ export default function App() {
                 r["ID No"] || '',
                 r["Consent Signed"] || 'YES',
                 r["Relationship"] || '',
-                r["Phone No"] || ''
+                r["Phone No"] || '',
+                r._id // Hidden ID for selection tracking
             ]);
 
             // Only update hotData if it's actually empty or the size changed
@@ -94,7 +127,8 @@ export default function App() {
                 // Check if any value changed externally
                 let changed = false;
                 for (let i = 0; i < data.length; i++) {
-                    for (let j = 0; j < data[i].length; j++) {
+                    // Ignore the _id at the end (index 10)
+                    for (let j = 0; j < 10; j++) {
                         if (data[i][j] !== prev[i][j]) {
                             changed = true;
                             break;
@@ -159,6 +193,8 @@ export default function App() {
         setProgress(0);
         setStatusMsg("Initializing extraction...");
         setResults([]);
+        setSkippedCount(0);
+        setExtractTimeElapsed(0);
 
         try {
             const formData = new FormData();
@@ -174,6 +210,7 @@ export default function App() {
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
             let accumulatedResults = [];
+            let accumulatedSkips = 0;
             let buffer = "";
 
             while (true) {
@@ -191,18 +228,20 @@ export default function App() {
 
                         if (event.type === 'init') {
                             setStatusMsg(`Extracted ${event.total_pages} pages. Analyzing...`);
+                            setTotalPages(event.total_pages);
                         } else if (event.type === 'progress') {
                             const percent = Math.round((event.current / event.total) * 100);
                             setProgress(percent);
                             setStatusMsg(`Analyzing Page ${event.page} of ${event.total}...`);
                         } else if (event.type === 'data') {
                             accumulatedResults.push(event.data);
-                            // Optionally update results partially for "live" appearance, 
-                            // but usually safer to wait for complete to avoid grid flickering.
+                        } else if (event.type === 'skip') {
+                            accumulatedSkips++;
                         } else if (event.type === 'error') {
                             throw new Error(event.message);
                         } else if (event.type === 'complete') {
                             setResults([...accumulatedResults]);
+                            setSkippedCount(accumulatedSkips);
                             if (accumulatedResults.length > 0) setSelectedId(accumulatedResults[0]._id);
                             setStep(2);
                         }
@@ -267,6 +306,7 @@ export default function App() {
         setError(null);
         setProgress(0);
         setStatusMsg("Preparing package generation...");
+        setFinalizeTimeElapsed(0);
 
         try {
             const formData = new FormData();
@@ -532,7 +572,10 @@ export default function App() {
                                                             transition={{ duration: 0.5 }}
                                                         />
                                                     </div>
-                                                    <span className="text-[10px] mt-1 opacity-70 uppercase tracking-widest font-bold">{progress}% Complete</span>
+                                                    <div className="flex justify-between w-full mt-1">
+                                                        <span className="text-[10px] opacity-70 uppercase tracking-widest font-bold">{progress}% Complete</span>
+                                                        <span className="text-[10px] opacity-90 uppercase tracking-widest font-bold font-mono text-blue-100">{formatTimer(extractTimeElapsed)}</span>
+                                                    </div>
                                                 </div>
                                             ) : (
                                                 <div className="flex items-center space-x-3">
@@ -600,12 +643,16 @@ export default function App() {
                                                         <Loader2 className="animate-spin" size={12} />
                                                         <span className="text-[9px] truncate max-w-[140px]">{statusMsg}</span>
                                                     </div>
-                                                    <div className="w-full h-1 bg-white/20 rounded-full overflow-hidden">
+                                                    <div className="w-full h-1 bg-white/20 rounded-full overflow-hidden mb-1">
                                                         <motion.div
                                                             className="h-full bg-white"
                                                             initial={{ width: 0 }}
                                                             animate={{ width: `${progress}%` }}
                                                         />
+                                                    </div>
+                                                    <div className="flex justify-between w-full">
+                                                        <span className="text-[8px] opacity-70 uppercase tracking-widest font-bold">Progress</span>
+                                                        <span className="text-[8px] opacity-90 uppercase tracking-widest font-bold font-mono text-emerald-100">{formatTimer(finalizeTimeElapsed)}</span>
                                                     </div>
                                                 </div>
                                             ) : (
@@ -617,6 +664,15 @@ export default function App() {
                                         </button>
                                     </div>
                                 </div>
+
+                                {skippedCount > 0 && (
+                                    <div className="bg-amber-50 border-b border-amber-200 px-8 py-3 flex items-center space-x-3 text-amber-800 shrink-0 z-20 shadow-sm relative">
+                                        <AlertCircle size={16} className="text-amber-600" />
+                                        <div className="text-xs font-medium">
+                                            <span className="font-bold">{skippedCount} page{skippedCount > 1 ? 's' : ''} skipped:</span> Not recognized as Wayleave Consent Forms.
+                                        </div>
+                                    </div>
+                                )}
 
                                 <div className="flex-1 flex min-h-0 bg-white shadow-inner" style={{ overflow: 'hidden' }}>
                                     {/* Handsontable: The Exact Excel UI */}
@@ -634,8 +690,19 @@ export default function App() {
                                                     'ID No',
                                                     'Consent',
                                                     'Relationship',
-                                                    'Phone'
+                                                    'Phone',
+                                                    '_id'
                                                 ]}
+                                                columns={[
+                                                    { type: 'text' }, { type: 'text' }, { type: 'text' }, { type: 'text' },
+                                                    { type: 'text' }, { type: 'text' }, { type: 'text' }, { type: 'text' },
+                                                    { type: 'text' }, { type: 'text' },
+                                                    { type: 'text', readOnly: true, editor: false } // hidden column logic via css or just ignore it
+                                                ]}
+                                                hiddenColumns={{
+                                                    columns: [10],
+                                                    indicators: false
+                                                }}
                                                 height={Math.floor(window.innerHeight * 0.72)}
                                                 width="100%"
                                                 licenseKey="non-commercial-and-evaluation"
@@ -651,15 +718,10 @@ export default function App() {
                                                 fillHandle={true} // Enable drag-to-fill
                                                 afterChange={handleHotChange}
                                                 afterSelectionEnd={function (row) {
-                                                    // Use getSourceDataAtRow to get the true index when sorted
-                                                    const sourceData = this.getSourceDataAtRow(row);
-                                                    // In our array-of-arrays case, we need to find the result object 
-                                                    // that matches this data, or simply find the index in original results
-                                                    // Simplified: results and original hotData share indexes
-                                                    const visualIndex = row;
-                                                    const logicalRow = this.toPhysicalRow(visualIndex);
-                                                    if (results[logicalRow]) {
-                                                        setSelectedId(results[logicalRow]._id);
+                                                    // Get the exact data array for the row sitting at this visual index
+                                                    const rowData = this.getSourceDataAtRow(this.toPhysicalRow(row));
+                                                    if (rowData && rowData[10]) { // Index 10 is the hidden _id
+                                                        setSelectedId(rowData[10]);
                                                     }
                                                 }}
                                                 viewportRowRenderingOffset={10}
@@ -812,9 +874,21 @@ export default function App() {
                                         <CheckCircle size={40} />
                                     </div>
                                     <h2 className="text-3xl font-bold text-slate-900 mb-4 tracking-tight">Processing Complete</h2>
-                                    <p className="text-slate-500 mb-10 leading-relaxed font-medium">
+                                    <p className="text-slate-500 mb-8 leading-relaxed font-medium">
                                         Your wayleave automation package has been generated successfully. All metadata has been extracted, validated, and bundled into a final distribution archive.
                                     </p>
+
+                                    <div className="grid grid-cols-2 gap-4 mb-10">
+                                        <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 shadow-sm text-center flex flex-col justify-center">
+                                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Total Processing Time</p>
+                                            <p className="text-2xl font-black text-slate-800 tracking-tight font-mono">{formatTimer(extractTimeElapsed + finalizeTimeElapsed)}</p>
+                                        </div>
+                                        <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 shadow-sm text-center flex flex-col justify-center">
+                                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Total Pages Processed</p>
+                                            <p className="text-2xl font-black text-slate-800 tracking-tight font-mono">{totalPages}</p>
+                                        </div>
+                                    </div>
+
                                     <div className="flex flex-col space-y-4">
                                         <button
                                             onClick={() => window.location.reload()}

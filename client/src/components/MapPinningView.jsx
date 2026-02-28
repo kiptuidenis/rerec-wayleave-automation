@@ -127,6 +127,15 @@ const MapPinningView = ({ missingPins, sitePlanFile, onResolve, onBack }) => {
         onResolve(pins);
     };
 
+    const handleClearPin = (e, recordId) => {
+        e.stopPropagation();
+        setPins(prev => {
+            const newPins = { ...prev };
+            delete newPins[recordId];
+            return newPins;
+        });
+    };
+
     const handleSearch = async (e) => {
         e.preventDefault();
         if (!searchQuery.trim() || !sitePlanFile) return;
@@ -324,8 +333,19 @@ const MapPinningView = ({ missingPins, sitePlanFile, onResolve, onBack }) => {
                                             <h5 className="text-[12px] font-bold text-slate-800 truncate" title={name}>{name}</h5>
                                             <p className="text-[10px] text-slate-500 uppercase tracking-wider font-mono mt-0.5 text-blue-600 font-bold bg-blue-50 inline-block px-1.5 py-0.5 rounded">Plot {plotNum || 'N/A'}</p>
                                         </div>
-                                        <div className={`text-[9px] font-bold uppercase px-2 py-1 rounded border overflow-hidden shrink-0 ${statusColor}`}>
-                                            {statusText}
+                                        <div className="flex items-center space-x-1 shrink-0">
+                                            <div className={`text-[9px] font-bold uppercase px-2 py-1 rounded border overflow-hidden ${statusColor}`}>
+                                                {statusText}
+                                            </div>
+                                            {isPinned && (
+                                                <button
+                                                    onClick={(e) => handleClearPin(e, record._id)}
+                                                    className="p-1 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors"
+                                                    title="Clear Pin"
+                                                >
+                                                    <X size={14} />
+                                                </button>
+                                            )}
                                         </div>
                                     </div>
                                     {record["Phone No"] && (

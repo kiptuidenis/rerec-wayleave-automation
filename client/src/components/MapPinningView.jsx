@@ -11,6 +11,7 @@ const MapPinningView = ({ missingPins, sitePlanFile, isFinalizing, progress, sta
     const [activeRecordId, setActiveRecordId] = useState(missingPins.length > 0 ? missingPins[0]._id : null);
     const [pins, setPins] = useState({}); // { _id: { _manual_x: float, _manual_y: float, _manual_page: int } }
     const [scale, setScale] = useState(1);
+    const [showConfirmModal, setShowConfirmModal] = useState(false);
 
     // Multi-page Support
     const [totalPages, setTotalPages] = useState(0);
@@ -222,7 +223,23 @@ const MapPinningView = ({ missingPins, sitePlanFile, isFinalizing, progress, sta
     };
 
     const handleComplete = () => {
-        onResolve(pins);
+        // Auto-assign any completely unresolved pins as "Not on Map" when they try to finalize
+        const autoNotOnMapIds = {};
+        const completelyUnresolved = missingPins.filter(p => !pins[p._id]);
+
+        completelyUnresolved.forEach(p => {
+            autoNotOnMapIds[p._id] = { _not_on_map: true };
+        });
+
+        const pendingPins = { ...pins, ...autoNotOnMapIds };
+
+        const notOnMapRecords = missingPins.filter(p => pendingPins[p._id] && pendingPins[p._id]._not_on_map);
+        if (notOnMapRecords.length > 0) {
+            setPins(pendingPins); // ensure state is synced before modal
+            setShowConfirmModal(true);
+        } else {
+            onResolve(pendingPins);
+        }
     };
 
     const handleClearPin = (e, id) => {
@@ -236,12 +253,10 @@ const MapPinningView = ({ missingPins, sitePlanFile, isFinalizing, progress, sta
 
     const handleMarkNotOnMap = (e, id) => {
         e.stopPropagation();
-        if (window.confirm("Are you sure this plot is not on the map? It will be skipped during package generation.")) {
-            setPins(prev => ({ ...prev, [id]: { _not_on_map: true } }));
-            // Auto advance
-            const unmapped = missingPins.filter(p => !pins[p._id] && p._id !== id);
-            if (unmapped.length > 0) setActiveRecordId(unmapped[0]._id);
-        }
+        setPins(prev => ({ ...prev, [id]: { _not_on_map: true } }));
+        // Auto advance
+        const unmapped = missingPins.filter(p => !pins[p._id] && p._id !== id);
+        if (unmapped.length > 0) setActiveRecordId(unmapped[0]._id);
     };
 
     const formatTimer = (seconds) => {

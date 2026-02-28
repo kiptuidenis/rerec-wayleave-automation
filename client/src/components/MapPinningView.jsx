@@ -25,6 +25,29 @@ const MapPinningView = ({ missingPins, sitePlanFile, onResolve, onBack }) => {
     const pageRefs = useRef({});
     const scrollContainerRef = useRef(null);
 
+    // Mouse Drag/Pan State
+    const [isDragging, setIsDragging] = useState(false);
+    const dragPosRef = useRef({ x: 0, y: 0, left: 0, top: 0 });
+
+    // Custom Wheel Zoom event (Non-passive to prevent scrolling)
+    useEffect(() => {
+        const container = scrollContainerRef.current;
+        if (!container) return;
+
+        const handleWheel = (e) => {
+            e.preventDefault(); // Stop normal scroll
+            setScale(s => {
+                const zoomFactor = 0.1;
+                const newScale = e.deltaY < 0 ? s + zoomFactor : s - zoomFactor;
+                return Math.max(0.2, Math.min(3, newScale));
+            });
+        };
+
+        // Add non-passive event listener
+        container.addEventListener('wheel', handleWheel, { passive: false });
+        return () => container.removeEventListener('wheel', handleWheel);
+    }, []);
+
     // Create the high-res map view
     useEffect(() => {
         if (!sitePlanFile) return;
@@ -100,8 +123,8 @@ const MapPinningView = ({ missingPins, sitePlanFile, onResolve, onBack }) => {
         };
     }, [sitePlanFile]);
 
-    const handleCanvasClick = (e, pageIndex) => {
-        if (!activeRecordId) return;
+    const handleCanvasDoubleClick = (e, pageIndex) => {
+        if (!activeRecordId || isDragging) return;
 
         // Find relative coordinates on the image container for the specific sheet
         const rect = e.currentTarget.getBoundingClientRect();
@@ -121,6 +144,30 @@ const MapPinningView = ({ missingPins, sitePlanFile, onResolve, onBack }) => {
         if (currentIndex !== -1 && currentIndex < missingPins.length - 1) {
             setActiveRecordId(missingPins[currentIndex + 1]._id);
         }
+    };
+
+    const handleMouseDown = (e) => {
+        // Prevent middle/right clicks from initiating a drag pan
+        if (e.button !== 0) return;
+        setIsDragging(true);
+        dragPosRef.current = {
+            x: e.clientX,
+            y: e.clientY,
+            left: scrollContainerRef.current.scrollLeft,
+            top: scrollContainerRef.current.scrollTop
+        };
+    };
+
+    const handleMouseMove = (e) => {
+        if (!isDragging) return;
+        const dx = e.clientX - dragPosRef.current.x;
+        const dy = e.clientY - dragPosRef.current.y;
+        scrollContainerRef.current.scrollLeft = dragPosRef.current.left - dx;
+        scrollContainerRef.current.scrollTop = dragPosRef.current.top - dy;
+    };
+
+    const handleMouseUpOrLeave = () => {
+        if (isDragging) setIsDragging(false);
     };
 
     const handleComplete = () => {
@@ -455,7 +502,11 @@ const MapPinningView = ({ missingPins, sitePlanFile, onResolve, onBack }) => {
                     ) : (
                         <div
                             ref={scrollContainerRef}
-                            className="flex-1 overflow-auto relative custom-scrollbar bg-[url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAAAXNSR0IArs4c6QAAACVJREFUKFNjZCASMDKgAnv37v3/n00xigk1gNQwMo3EaDJS3EIAK4oR84z7yNwAAAAASUVORK5CYII=')]"
+                            className={`flex-1 overflow-auto relative bg-[url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAAAXNSR0IArs4c6QAAACVJREFUKFNjZCASMDKgAnv37v3/n00xigk1gNQwMo3EaDJS3EIAK4oR84z7yNwAAAAASUVORK5CYII=')] select-none ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
+                            onMouseDown={handleMouseDown}
+                            onMouseMove={handleMouseMove}
+                            onMouseUp={handleMouseUpOrLeave}
+                            onMouseLeave={handleMouseUpOrLeave}
                         >
                             <div
                                 className="inline-flex flex-col items-center p-8 origin-top-left transition-transform duration-200 ease-out"
@@ -465,8 +516,8 @@ const MapPinningView = ({ missingPins, sitePlanFile, onResolve, onBack }) => {
                                     <div
                                         key={index}
                                         ref={(el) => pageRefs.current[index] = el}
-                                        className="relative mb-8 shadow-[0_10px_40px_-10px_rgba(0,0,0,0.3)] bg-white cursor-crosshair ring-1 ring-slate-200/50"
-                                        onClick={(e) => handleCanvasClick(e, index)}
+                                        className="relative mb-8 shadow-[0_10px_40px_-10px_rgba(0,0,0,0.3)] bg-white ring-1 ring-slate-200/50"
+                                        onDoubleClick={(e) => handleCanvasDoubleClick(e, index)}
                                     >
                                         <img src={url} alt={`Site Plan Page ${index + 1}`} className="max-w-none select-none pointer-events-none block" />
 

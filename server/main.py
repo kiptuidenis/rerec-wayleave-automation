@@ -30,6 +30,7 @@ app.add_middleware(
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Total-Pages"]
 )
 
 # Global registry for temporary downloads (used in local tool context)
@@ -281,13 +282,14 @@ async def finalize_project(
                             match = None
                             
                             if _manual_x is not None and _manual_y is not None:
-                                page = locator.doc[0]
+                                _manual_page = int(row.get("_manual_page", 0))
+                                page = locator.doc[_manual_page]
                                 pw, ph = page.rect.width, page.rect.height
                                 cx = pw * float(_manual_x)
                                 cy = ph * float(_manual_y)
                                 rect = fitz.Rect(cx-5, cy-5, cx+5, cy+5)
                                 match = {
-                                    "page": 0,
+                                    "page": _manual_page,
                                     "rect": rect,
                                     "method": "manual_pin_drop"
                                 }
@@ -510,8 +512,16 @@ async def render_site_plan_hq(request: Request):
             # 150 DPI provides high enough resolution for zooming without crashing the browser
             pix = page.get_pixmap(dpi=150)
             img_data = pix.tobytes("png")
+            total_pages = len(doc)
             doc.close()
-            return Response(content=img_data, media_type="image/png", headers={"Cache-Control": "public, max-age=3600"})
+            return Response(
+                content=img_data, 
+                media_type="image/png", 
+                headers={
+                    "Cache-Control": "public, max-age=3600",
+                    "X-Total-Pages": str(total_pages)
+                }
+            )
         except Exception as e:
             if 'doc' in locals() and hasattr(doc, 'close'): doc.close()
             raise HTTPException(status_code=500, detail=f"HQ Render Error: {str(e)}")

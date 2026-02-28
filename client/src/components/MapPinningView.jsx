@@ -5,20 +5,30 @@ import { motion } from 'framer-motion';
 const API_BASE = "http://localhost:8000";
 
 const MapPinningView = ({ missingPins, sitePlanFile, onResolve, onBack }) => {
-    const [hqImageUrl, setHqImageUrl] = useState(null);
+    const [pageUrls, setPageUrls] = useState([]);
     const [isLoadingImage, setIsLoadingImage] = useState(true);
     const [errorMsg, setErrorMsg] = useState(null);
     const [activeRecordId, setActiveRecordId] = useState(missingPins.length > 0 ? missingPins[0]._id : null);
-    const [pins, setPins] = useState({}); // { _id: { x: float, y: float } }
+    const [pins, setPins] = useState({}); // { _id: { _manual_x: float, _manual_y: float, _manual_page: int } }
     const [scale, setScale] = useState(1);
+
+    // Multi-page Support
+    const [totalPages, setTotalPages] = useState(0);
+    const [loadingProgress, setLoadingProgress] = useState({ current: 0, total: 0 });
 
     // Create the high-res map view
     useEffect(() => {
         if (!sitePlanFile) return;
 
-        const fetchHqMap = async () => {
+        let active = true;
+        const objectUrls = [];
+
+        const fetchAllPages = async () => {
             setIsLoadingImage(true);
+            setErrorMsg(null);
+
             try {
+                // Fetch page 0 first to get the total count
                 const formData = new FormData();
                 formData.append('file', sitePlanFile);
                 formData.append('page_num', '0');
@@ -30,27 +40,61 @@ const MapPinningView = ({ missingPins, sitePlanFile, onResolve, onBack }) => {
 
                 if (!response.ok) throw new Error("Failed to render high-res map");
 
+                const totalStr = response.headers.get("X-Total-Pages");
+                const total = totalStr ? parseInt(totalStr, 10) : 1;
+
+                if (!active) return;
+
+                setTotalPages(total);
+                setLoadingProgress({ current: 1, total });
+
                 const blob = await response.blob();
                 const url = URL.createObjectURL(blob);
-                setHqImageUrl(url);
+                objectUrls.push(url);
+                setPageUrls([...objectUrls]);
+
+                // If there are more pages, fetch them sequentially
+                for (let i = 1; i < total; i++) {
+                    if (!active) break;
+
+                    const fd = new FormData();
+                    fd.append('file', sitePlanFile);
+                    fd.append('page_num', i.toString());
+
+                    const res = await fetch(`${API_BASE}/render-site-plan-hq`, {
+                        method: 'POST',
+                        body: fd
+                    });
+
+                    if (res.ok) {
+                        const b = await res.blob();
+                        const u = URL.createObjectURL(b);
+                        objectUrls.push(u);
+                        setPageUrls([...objectUrls]);
+                    }
+                    if (active) setLoadingProgress({ current: i + 1, total });
+                }
+
             } catch (err) {
                 console.error(err);
-                setErrorMsg("Could not load high-resolution Site Plan.");
+                if (active) setErrorMsg("Could not load high-resolution Site Plan.");
             } finally {
-                setIsLoadingImage(false);
+                if (active) setIsLoadingImage(false);
             }
         };
-        fetchHqMap();
+
+        fetchAllPages();
 
         return () => {
-            if (hqImageUrl) URL.revokeObjectURL(hqImageUrl);
+            active = false;
+            objectUrls.forEach(url => URL.revokeObjectURL(url));
         };
     }, [sitePlanFile]);
 
-    const handleCanvasClick = (e) => {
+    const handleCanvasClick = (e, pageIndex) => {
         if (!activeRecordId) return;
 
-        // Find relative coordinates on the image
+        // Find relative coordinates on the image container for the specific sheet
         const rect = e.currentTarget.getBoundingClientRect();
         const x = e.clientX - rect.left;
         const y = e.clientY - rect.top;
@@ -60,7 +104,7 @@ const MapPinningView = ({ missingPins, sitePlanFile, onResolve, onBack }) => {
 
         setPins(prev => ({
             ...prev,
-            [activeRecordId]: { _manual_x: relativeX, _manual_y: relativeY }
+            [activeRecordId]: { _manual_x: relativeX, _manual_y: relativeY, _manual_page: pageIndex }
         }));
 
         // Auto-advance to next missing pin
@@ -95,6 +139,7 @@ const MapPinningView = ({ missingPins, sitePlanFile, onResolve, onBack }) => {
                         </p>
                     </div>
                 </div>
+
                 <div className="flex justify-end space-x-3">
                     <button
                         onClick={handleComplete}
@@ -155,7 +200,7 @@ const MapPinningView = ({ missingPins, sitePlanFile, onResolve, onBack }) => {
                                     </div>
                                     {record["Phone No"] && (
                                         <div className="text-[10px] text-slate-400 font-mono mt-2 flex items-center">
-                                            <span className="opacity-70 mr-2">ðŸ“±</span> {record["Phone No"]}
+                                            <span className="opacity-70 mr-2">📱</span> {record["Phone No"]}
                                         </div>
                                     )}
                                 </div>
@@ -185,7 +230,7 @@ const MapPinningView = ({ missingPins, sitePlanFile, onResolve, onBack }) => {
                         </button>
                     </div>
 
-                    {isLoadingImage ? (
+                    {isLoadingImage && pageUrls.length === 0 ? (
                         <div className="flex-1 flex flex-col items-center justify-center space-y-4 text-slate-500">
                             <Loader2 size={40} className="animate-spin text-blue-500" />
                             <p className="text-xs uppercase font-bold tracking-widest text-slate-500">Rendering High-Res Cartography...</p>
@@ -197,30 +242,54 @@ const MapPinningView = ({ missingPins, sitePlanFile, onResolve, onBack }) => {
                     ) : (
                         <div className="flex-1 overflow-auto relative custom-scrollbar bg-[url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAAAXNSR0IArs4c6QAAACVJREFUKFNjZCASMDKgAnv37v3/n00xigk1gNQwMo3EaDJS3EIAK4oR84z7yNwAAAAASUVORK5CYII=')]">
                             <div
-                                className="inline-block relative origin-top-left cursor-crosshair drop-shadow-2xl transition-transform duration-200 ease-out"
-                                style={{ transform: `scale(${scale})` }}
-                                onClick={handleCanvasClick}
+                                className="inline-flex flex-col items-center p-8 origin-top-left transition-transform duration-200 ease-out"
+                                style={{ transform: `scale(${scale})`, minWidth: '100%' }}
                             >
-                                <img src={hqImageUrl} alt="High Res Site Plan" className="max-w-none select-none pointer-events-none block" />
-
-                                {/* Render dropped pins */}
-                                {Object.entries(pins).map(([id, coords]) => (
+                                {pageUrls.map((url, index) => (
                                     <div
-                                        key={id}
-                                        className="absolute transform -translate-x-1/2 -translate-y-[100%] pointer-events-none drop-shadow-md pb-[2px]"
-                                        style={{
-                                            left: `${coords._manual_x * 100}%`,
-                                            top: `${coords._manual_y * 100}%`
-                                        }}
+                                        key={index}
+                                        className="relative mb-8 shadow-[0_10px_40px_-10px_rgba(0,0,0,0.3)] bg-white cursor-crosshair ring-1 ring-slate-200/50"
+                                        onClick={(e) => handleCanvasClick(e, index)}
                                     >
-                                        <MapPin
-                                            size={48 / scale}
-                                            className={`${id === activeRecordId ? 'text-amber-500 animate-bounce' : 'text-emerald-500'}`}
-                                            fill={id === activeRecordId ? '#fcd34d' : '#a7f3d0'}
-                                            strokeWidth={1.5}
-                                        />
+                                        <img src={url} alt={`Site Plan Page ${index + 1}`} className="max-w-none select-none pointer-events-none block" />
+
+                                        {/* Page Label */}
+                                        <div className="absolute top-4 left-4 bg-slate-900/80 text-white text-[10px] font-bold px-2 py-1 rounded shadow-sm opacity-50 hover:opacity-100 transition-opacity pointer-events-none z-10">
+                                            Sheet {index + 1}
+                                        </div>
+
+                                        {/* Render dropped pins for THIS page */}
+                                        {Object.entries(pins).map(([id, coords]) => {
+                                            if (coords._manual_page !== index) return null;
+                                            return (
+                                                <div
+                                                    key={id}
+                                                    className="absolute transform -translate-x-1/2 -translate-y-[100%] pointer-events-none drop-shadow-md pb-[2px] z-20"
+                                                    style={{
+                                                        left: `${coords._manual_x * 100}%`,
+                                                        top: `${coords._manual_y * 100}%`
+                                                    }}
+                                                >
+                                                    <MapPin
+                                                        size={48 / scale}
+                                                        className={`${id === activeRecordId ? 'text-amber-500 animate-bounce' : 'text-emerald-500'}`}
+                                                        fill={id === activeRecordId ? '#fcd34d' : '#a7f3d0'}
+                                                        strokeWidth={1.5}
+                                                    />
+                                                </div>
+                                            );
+                                        })}
                                     </div>
                                 ))}
+
+                                {isLoadingImage && pageUrls.length > 0 && (
+                                    <div className="py-8 flex flex-col items-center text-slate-400">
+                                        <Loader2 size={24} className="animate-spin mb-2" />
+                                        <span className="text-[10px] uppercase font-bold tracking-widest">
+                                            Loading Sheet {loadingProgress.current + 1} of {loadingProgress.total}...
+                                        </span>
+                                    </div>
+                                )}
                             </div>
                         </div>
                     )}

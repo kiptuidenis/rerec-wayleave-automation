@@ -51,11 +51,14 @@ class ConsentExtractor:
         self.client = genai.Client(api_key=API_KEY)
         self.model_name = model_name
 
-    def extract_details(self, pdf_path):
+    def extract_details(self, pdf_path, processed_pages=None):
         """
         Extracts details from ALL pages of the PDF in parallel.
         Yields: (page_num, data_json) or (page_num, None) if failed.
         """
+        if processed_pages is None:
+            processed_pages = set()
+            
         from concurrent.futures import ThreadPoolExecutor, as_completed
         
         doc = None
@@ -74,8 +77,12 @@ class ConsentExtractor:
                 chunk_end = min(chunk_start + chunk_size, num_pages)
                 p_tasks = []
                 
-                # Pre-extract images ONLY for this chunk
+                # Pre-extract images ONLY for this chunk, skipping already processed ones
                 for page_num in range(chunk_start, chunk_end):
+                    if page_num in processed_pages:
+                        completed_count += 1
+                        continue
+                        
                     page = doc[page_num]
                     pix = page.get_pixmap(dpi=150)
                     img_data = pix.tobytes("png")
@@ -97,26 +104,28 @@ class ConsentExtractor:
                     for future in as_completed(future_to_page):
                         p_num = future_to_page[future]
                         completed_count += 1
-                        try:
-                            data = future.result()
-                            results[p_num] = data
-                            # Yield immediate progress update
-                            yield p_num, {"type": "progress", "current": completed_count, "total": num_pages, "page": p_num + 1}
-                        except Exception as exc:
-                            print(f"    [Page {p_num+1} Fatal Error] {exc}")
-                            results[p_num] = None
-
-            # Yield final data in order
-            for page_num, data in enumerate(results):
-                if data and data.get("is_wayleave_consent_form"):
-                    yield page_num, {"type": "data", "page_num": page_num, "data": data}
-                elif data:
-                    print(f"    [Skipping Page {page_num+1}] Not a Wayleave Consent Form")
-                    yield page_num, {"type": "skip", "page_num": page_num}
+                        
+                        # We don't swallow exceptions here anymore. 
+                        # If future.result() raises, it bubbles up to catch block and aborts stream.
+                        data = future.result()
+                        
+                        # Yield immediate progress update
+                        yield p_num, {"type": "progress", "current": completed_count, "total": num_pages, "page": p_num + 1}
+                        
+                        # Yield the actual data immediately instead of accumulating
+                        if data and data.get("is_wayleave_consent_form"):
+                            yield p_num, {"type": "data", "page_num": p_num, "data": data}
+                        elif data:
+                            print(f"    [Skipping Page {p_num+1}] Not a Wayleave Consent Form")
+                            yield p_num, {"type": "skip", "page_num": p_num}
+                        else:
+                            # AI returned None (likely JSON decode error, not fatal network error)
+                            print(f"    [Page {p_num+1}] AI returned None, skipping.")
+                            yield p_num, {"type": "skip", "page_num": p_num}
                     
         except Exception as e:
-            print(f"[Extractor Error] {e}")
-            return
+            print(f"[Extractor Fatal Error] {e}")
+            raise e # Actively raise to the caller (main.py) so it can send an error stream event
         finally:
             if doc:
                 doc.close()
@@ -199,7 +208,7 @@ class ConsentExtractor:
                             continue
                     
                     print(f"    [Page {page_num+1} Final Failure] {e}")
-                    return None
+                    raise Exception(f"Fatal API Error on page {page_num+1} after {retries} retries: {str(e)}")
 
             if not response or not response.text:
                 return None
@@ -218,7 +227,10 @@ class ConsentExtractor:
             
             return data
         except Exception as e:
-            print(f"    [Page {page_num+1} Error] {e}")
+            # Re-raise explicit exceptions (like the retry limit exception above)
+            if "Fatal API Error" in str(e):
+                raise e
+            print(f"    [Page {page_num+1} Exception] {e}")
             return None
 
     def process_page(self, doc, page_num):
@@ -641,11 +653,24 @@ class ExcelWriter:
         # Find real last data row (skip empty formatted rows)
         last_row = 1
         for r in range(1, ws.max_row + 1):
-            if ws.cell(r, 1).value is not None:
-                last_row = r
+            try:
+                cell = ws.cell(r, 1)
+                # If we hit a merged cell in the first column, we likely hit a footer.
+                if type(cell).__name__ == "MergedCell":
+                    pass
+                elif cell.value is not None:
+                    last_row = r
+            except Exception:
+                pass
 
         start = last_row + 1
-        template = ws[3]  # Row 3 = example data row (Goudy Old Style, 8pt, not bold)
+        
+        # Capture template formatting before inserting rows
+        template_row_index = 3
+        template_cells = [copy(c) for c in ws[template_row_index]]
+
+        # Safely insert exactly len(data_list) rows to push existing footers/merged cells downwards
+        ws.insert_rows(start, amount=len(data_list))
 
         for i, data in enumerate(data_list):
             row = start + i
@@ -663,16 +688,21 @@ class ExcelWriter:
                 if col == 1:
                     continue  # S/NO handled above
                 val = data.get(key, "") if key else ""
-                ws.cell(row, col, val)
+                
+                # Check for merged cell to be absolutely safe (should not happen after insert_rows)
+                target_cell = ws.cell(row, col)
+                if type(target_cell).__name__ == "MergedCell":
+                    continue
+                target_cell.value = val
 
             # Copy formatting from template row
             for col in range(1, 15):
-                src = template[col - 1]
+                src = template_cells[col - 1]
                 tgt = ws.cell(row, col)
                 if src.has_style:
-                    tgt.font = cls._copy_font(src.font)
-                    tgt.border = cls._copy_border(src.border)
-                    tgt.alignment = cls._copy_align(src.alignment)
+                    if src.font: tgt.font = cls._copy_font(src.font)
+                    if src.border: tgt.border = cls._copy_border(src.border)
+                    if src.alignment: tgt.alignment = cls._copy_align(src.alignment)
 
         wb.save(output_buffer)
         return len(data_list)

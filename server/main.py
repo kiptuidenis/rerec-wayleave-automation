@@ -15,6 +15,13 @@ from workflow_lib import ConsentExtractor, SitePlanLocator, PDFProcessor, ExcelW
 import sys
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+# CRITICAL FIX: The user's C: drive has 0 bytes free. 
+# Force all temporary spooling (FastAPI uploads, Python tmp files) to use the F: drive.
+temp_dir_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".tmp")
+os.makedirs(temp_dir_path, exist_ok=True)
+import tempfile
+tempfile.tempdir = temp_dir_path
+
 app = FastAPI(title="Wayleave Automation API")
 
 # Enable CORS for React dev server
@@ -28,17 +35,51 @@ app.add_middleware(
 # Global registry for temporary downloads (used in local tool context)
 DOWNLOAD_REGISTRY = {}
 
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from fastapi import Request
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    import traceback
+    print(f"Validation Error: {exc.errors()}")
+    print(f"Body: {exc.body}")
+    return JSONResponse(
+        status_code=400,
+        content={"detail": exc.errors(), "body": str(exc.body)},
+    )
+
 @app.get("/")
 def read_root():
     return {"status": "ok", "message": "Wayleave Automation API is running"}
 
 @app.post("/extract")
-async def extract_documents(
-    files: List[UploadFile] = File(...),
-):
+async def extract_documents(request: Request):
     from fastapi.responses import StreamingResponse
     import asyncio
     
+    try:
+        form = await request.form()
+        files = form.getlist("files")
+        processed_pages = form.get("processed_pages")
+    except Exception as e:
+        print(f"Error parsing form data: {e}")
+        return JSONResponse(status_code=400, content={"detail": f"Form parse error: {str(e)}"})
+    
+    if not files:
+        return JSONResponse(status_code=400, content={"detail": "No files provided"})
+        
+    # Parse processed pages map: {"filename.pdf": [0, 1, 2], ...}
+    processed_map = {}
+    if processed_pages:
+        try:
+            processed_map = json.loads(processed_pages)
+            # Convert list of pages to set for faster lookup
+            for k, v in processed_map.items():
+                processed_map[k] = set(v)
+        except Exception as e:
+            print(f"Warning: Failed to parse processed_pages: {e}")
+
     extractor = ConsentExtractor()
     
     async def event_generator():
@@ -55,8 +96,11 @@ async def extract_documents(
                 # Yield filename for context
                 yield json.dumps({"type": "file_start", "filename": item["name"]}) + "\n"
                 
+                # Get the set of already processed pages for this specific file
+                skip_pages = processed_map.get(item["name"], set())
+                
                 # extractor.extract_details is now yielding (page_num, event_dict)
-                for page_num, event in extractor.extract_details(item["path"]):
+                for page_num, event in extractor.extract_details(item["path"], processed_pages=skip_pages):
                     if event["type"] == "data":
                         # Enrich data with metadata
                         data = event["data"]
@@ -90,11 +134,12 @@ async def extract_documents(
 
 @app.post("/download-excel")
 async def download_excel(
-    extraction_results: str = Form(...),
+    extraction_results_file: UploadFile = File(...),
     excel_template: UploadFile = File(...)
 ):
     try:
-        results_list = json.loads(extraction_results)
+        content = await extraction_results_file.read()
+        results_list = json.loads(content.decode("utf-8"))
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid extraction_results JSON")
     
@@ -122,7 +167,7 @@ async def download_excel(
 @app.post("/finalize")
 async def finalize_project(
     background_tasks: BackgroundTasks,
-    extraction_results: str = Form(...),
+    extraction_results_file: UploadFile = File(...),
     site_plan: UploadFile = File(...),
     excel_template: UploadFile = File(...),
     consent_pdfs: List[UploadFile] = File(...)
@@ -132,7 +177,8 @@ async def finalize_project(
     import uuid
     
     try:
-        results_list = json.loads(extraction_results)
+        content = await extraction_results_file.read()
+        results_list = json.loads(content.decode("utf-8"))
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid extraction_results JSON")
     
@@ -294,10 +340,18 @@ async def download_file(file_id: str, background_tasks: BackgroundTasks):
     )
 
 @app.post("/preview")
-async def get_preview(
-    file: UploadFile = File(...),
-    page_num: int = Form(...)
-):
+async def get_preview(request: Request):
+    try:
+        form = await request.form()
+        file = form.get("file")
+        page_num_str = form.get("page_num")
+        page_num = int(page_num_str) if page_num_str else 0
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"detail": f"Form parse error: {str(e)}"})
+    
+    if not file:
+        return JSONResponse(status_code=400, content={"detail": "No file provided"})
+        
     try:
         suffix = os.path.splitext(file.filename)[1]
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
@@ -323,6 +377,54 @@ async def get_preview(
                 os.remove(tmp_path)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/analyze-site-plan")
+async def analyze_site_plan(request: Request):
+    """
+    Validates if a site plan PDF has searchable text or if it is just a rasterized image/flattened drawing.
+    """
+    try:
+        form = await request.form()
+        file = form.get("file")
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"detail": f"Form parse error: {str(e)}"})
+    
+    if not file:
+        return JSONResponse(status_code=400, content={"detail": "No file provided"})
+        
+    try:
+        suffix = os.path.splitext(file.filename)[1]
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            shutil.copyfileobj(file.file, tmp)
+            tmp_path = tmp.name
+            
+        try:
+            doc = fitz.open(tmp_path)
+            # Sample up to first 3 pages
+            extracted_text = ""
+            for i in range(min(3, len(doc))):
+                extracted_text += doc[i].get_text()
+                if len(extracted_text) > 4000:  # Enough text to be confident it's searchable
+                    break
+            
+            # Simple heuristic: Real site plans have thousands of characters of labels.
+            # Raster images or un-embedded SHX fonts yield almost nothing on the text layer.
+            text_len = len(extracted_text.strip())
+            is_searchable = text_len >= 4000  # Threshold for warning
+            
+            return {
+                "is_searchable": is_searchable, 
+                "text_length": text_len,
+                "message": "Unsearchable PDF detected. The system cannot locate names or plots automatically. Please re-export Site Plan with 'Searchable Text / TrueType Fonts' enabled." if not is_searchable else "OK"
+            }
+        finally:
+            if 'doc' in locals() and hasattr(doc, 'close'):
+                doc.close()
+            if os.path.exists(tmp_path):
+                try: os.remove(tmp_path)
+                except Exception: pass
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"detail": str(e)})
 
 if __name__ == "__main__":
     import uvicorn

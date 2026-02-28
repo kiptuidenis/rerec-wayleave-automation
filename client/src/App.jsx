@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
     Upload,
@@ -21,7 +21,9 @@ import {
     Maximize2,
     X,
     ZoomIn,
-    ZoomOut
+    ZoomOut,
+    AlertTriangle,
+    RefreshCw
 } from 'lucide-react';
 import axios from 'axios';
 import { HotTable } from '@handsontable/react';
@@ -46,9 +48,12 @@ export default function App() {
     const [error, setError] = useState(null);
 
     // Files State
+    // Files State
     const [consentFiles, setConsentFiles] = useState([]);
     const [sitePlanFile, setSitePlanFile] = useState(null);
     const [excelTemplate, setExcelTemplate] = useState(null);
+    const [sitePlanWarning, setSitePlanWarning] = useState(null);
+    const [isVerifyingSitePlan, setIsVerifyingSitePlan] = useState(false);
 
     const [results, setResults] = useState([]);
     const [hotData, setHotData] = useState([]);
@@ -64,6 +69,12 @@ export default function App() {
     const [extractTimeElapsed, setExtractTimeElapsed] = useState(0);
     const [finalizeTimeElapsed, setFinalizeTimeElapsed] = useState(0);
     const [totalPages, setTotalPages] = useState(0);
+
+    const [finalDownloadUrl, setFinalDownloadUrl] = useState(null);
+    const [finalFilename, setFinalFilename] = useState("");
+
+    // Tracking for extraction resume
+    const [processedPages, setProcessedPages] = useState({});
 
     // Timers
     useEffect(() => {
@@ -145,6 +156,8 @@ export default function App() {
 
     // --- EFFECTS ---
     useEffect(() => {
+        const abortController = new AbortController();
+
         const fetchPreview = async () => {
             const selected = results.find(r => r._id === selectedId);
             if (!selected) return;
@@ -159,23 +172,60 @@ export default function App() {
                 formData.append('page_num', selected._page_num);
 
                 const res = await axios.post(`${API_BASE}/preview`, formData, {
-                    responseType: 'blob'
+                    responseType: 'blob',
+                    signal: abortController.signal
                 });
 
                 if (previewUrl) window.URL.revokeObjectURL(previewUrl);
                 const url = window.URL.createObjectURL(new Blob([res.data]));
                 setPreviewUrl(url);
             } catch (err) {
-                console.error("Preview failed", err);
-                setPreviewUrl(null);
+                if (axios.isCancel(err) || err.name === 'CanceledError' || (err.message && err.message.includes('canceled'))) {
+                    console.log('Preview fetch canceled because another row was selected.');
+                } else {
+                    console.error("Preview failed", err);
+                    setPreviewUrl(null);
+                }
             } finally {
-                setIsPreviewLoading(false);
+                if (!abortController.signal.aborted) {
+                    setIsPreviewLoading(false);
+                }
             }
         };
 
         if (selectedId) fetchPreview();
         else setPreviewUrl(null);
+
+        return () => {
+            abortController.abort();
+        };
     }, [selectedId, results, consentFiles]);
+
+    useEffect(() => {
+        if (!sitePlanFile) {
+            setSitePlanWarning(null);
+            return;
+        }
+
+        const verifySitePlan = async () => {
+            setIsVerifyingSitePlan(true);
+            setSitePlanWarning(null);
+            try {
+                const formData = new FormData();
+                formData.append('file', sitePlanFile);
+                const res = await axios.post(`${API_BASE}/analyze-site-plan`, formData);
+                if (!res.data.is_searchable) {
+                    setSitePlanWarning(res.data.message);
+                }
+            } catch (err) {
+                console.warn("Failed to analyze site plan", err);
+            } finally {
+                setIsVerifyingSitePlan(false);
+            }
+        };
+
+        verifySitePlan();
+    }, [sitePlanFile]);
 
     // --- HANDLERS ---
     // Progress State
@@ -191,14 +241,22 @@ export default function App() {
         setLoading(true);
         setError(null);
         setProgress(0);
-        setStatusMsg("Initializing extraction...");
-        setResults([]);
-        setSkippedCount(0);
-        setExtractTimeElapsed(0);
+        setStatusMsg(Object.keys(processedPages).length > 0 ? "Resuming extraction..." : "Initializing extraction...");
+
+        // Don't clear results/skipped if we are resuming
+        if (Object.keys(processedPages).length === 0) {
+            setResults([]);
+            setSkippedCount(0);
+            setExtractTimeElapsed(0);
+        }
 
         try {
             const formData = new FormData();
             consentFiles.forEach(file => formData.append('files', file));
+
+            if (Object.keys(processedPages).length > 0) {
+                formData.append('processed_pages', JSON.stringify(processedPages));
+            }
 
             const response = await fetch(`${API_BASE}/extract`, {
                 method: 'POST',
@@ -209,8 +267,12 @@ export default function App() {
 
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
-            let accumulatedResults = [];
-            let accumulatedSkips = 0;
+
+            // Start with previously accumulated data if resuming
+            let accumulatedResults = [...results];
+            let accumulatedSkips = skippedCount;
+            let currentProcessedMap = { ...processedPages };
+
             let buffer = "";
 
             while (true) {
@@ -235,13 +297,23 @@ export default function App() {
                             setStatusMsg(`Analyzing Page ${event.page} of ${event.total}...`);
                         } else if (event.type === 'data') {
                             accumulatedResults.push(event.data);
+                            // Track successful page for this file
+                            const fName = event.data._file_name;
+                            const pNum = event.data._page_num;
+                            if (!currentProcessedMap[fName]) currentProcessedMap[fName] = [];
+                            currentProcessedMap[fName].push(pNum);
+                            setProcessedPages({ ...currentProcessedMap });
                         } else if (event.type === 'skip') {
                             accumulatedSkips++;
+                        } else if (event.type === 'file_start') {
+                            // Ensure we have an entry for the file to track skips/errors against
+                            if (!currentProcessedMap[event.filename]) currentProcessedMap[event.filename] = [];
                         } else if (event.type === 'error') {
                             throw new Error(event.message);
                         } else if (event.type === 'complete') {
                             setResults([...accumulatedResults]);
                             setSkippedCount(accumulatedSkips);
+                            setProcessedPages({}); // Clear resume cache on success
                             if (accumulatedResults.length > 0) setSelectedId(accumulatedResults[0]._id);
                             setStep(2);
                         }
@@ -251,7 +323,7 @@ export default function App() {
                 }
             }
         } catch (err) {
-            setError(err.message || "Extraction failed. Ensure the backend is running.");
+            setError(`${err.message || 'Extraction failed'}. You can resume your progress.`);
             console.error(err);
         } finally {
             setLoading(false);
@@ -269,7 +341,8 @@ export default function App() {
 
         try {
             const formData = new FormData();
-            formData.append('extraction_results', JSON.stringify(results));
+            const jsonBlob = new Blob([JSON.stringify(results)], { type: 'application/json' });
+            formData.append('extraction_results_file', jsonBlob, 'results.json');
             formData.append('excel_template', excelTemplate);
 
             const response = await fetch(`${API_BASE}/download-excel`, {
@@ -310,7 +383,8 @@ export default function App() {
 
         try {
             const formData = new FormData();
-            formData.append('extraction_results', JSON.stringify(results));
+            const jsonBlob = new Blob([JSON.stringify(results)], { type: 'application/json' });
+            formData.append('extraction_results_file', jsonBlob, 'results.json');
             formData.append('site_plan', sitePlanFile);
             formData.append('excel_template', excelTemplate);
             consentFiles.forEach(file => formData.append('consent_pdfs', file));
@@ -348,15 +422,9 @@ export default function App() {
                         } else if (event.type === 'error') {
                             throw new Error(event.message);
                         } else if (event.type === 'complete') {
-                            // Automatic download
                             const downloadUrl = `${API_BASE}${event.download_url}`;
-                            const link = document.createElement('a');
-                            link.href = downloadUrl;
-                            link.setAttribute('download', event.filename);
-                            document.body.appendChild(link);
-                            link.click();
-                            document.body.removeChild(link);
-
+                            setFinalDownloadUrl(downloadUrl);
+                            setFinalFilename(event.filename);
                             setStep(3);
                         }
                     } catch (e) {
@@ -498,12 +566,21 @@ export default function App() {
                                             <h3 className="font-bold text-slate-800 tracking-tight">Project Resources</h3>
                                         </div>
                                         <div className="space-y-4">
-                                            <FileUploadZone
-                                                label="Master Site Plan (PDF)"
-                                                file={sitePlanFile}
-                                                setFile={setSitePlanFile}
-                                                icon={<FileText size={18} />}
-                                            />
+                                            <div>
+                                                <FileUploadZone
+                                                    label="Master Site Plan (PDF)"
+                                                    file={sitePlanFile}
+                                                    setFile={setSitePlanFile}
+                                                    icon={<FileText size={18} />}
+                                                />
+                                                {isVerifyingSitePlan && <p className="text-[10px] text-blue-500 mt-2 font-bold animate-pulse text-center">Verifying PDF text layer...</p>}
+                                                {sitePlanWarning && (
+                                                    <motion.div initial={{ opacity: 0, y: -5 }} animate={{ opacity: 1, y: 0 }} className="mt-3 text-left bg-orange-50 border border-orange-200 text-orange-700 text-[10px] p-3 rounded-xl flex items-start space-x-2 shadow-sm">
+                                                        <AlertTriangle size={14} className="flex-shrink-0 mt-0.5 text-orange-500" />
+                                                        <span className="font-bold leading-relaxed">{sitePlanWarning}</span>
+                                                    </motion.div>
+                                                )}
+                                            </div>
                                             <FileUploadZone
                                                 label="Metadata Template (XLSX)"
                                                 file={excelTemplate}
@@ -529,7 +606,10 @@ export default function App() {
                                         </div>
 
                                         <label className="flex-1 flex flex-col items-center justify-center border-2 border-dashed border-slate-200 rounded-2xl p-12 hover:bg-slate-50 hover:border-brand-primary/40 transition-all cursor-pointer group mb-6 bg-slate-50/50">
-                                            <input type="file" multiple className="hidden" onChange={(e) => setConsentFiles(Array.from(e.target.files))} />
+                                            <input type="file" multiple className="hidden" onChange={(e) => {
+                                                setConsentFiles(Array.from(e.target.files));
+                                                setProcessedPages({}); // Reset resume state when files change
+                                            }} />
                                             <div className="bg-white p-4 rounded-full shadow-sm border border-slate-200 group-hover:scale-110 transition-transform duration-300 mb-4">
                                                 <Upload className="text-slate-400 group-hover:text-brand-primary" size={32} />
                                             </div>
@@ -579,8 +659,17 @@ export default function App() {
                                                 </div>
                                             ) : (
                                                 <div className="flex items-center space-x-3">
-                                                    <Search size={20} />
-                                                    <span>Begin Cognitive Extraction</span>
+                                                    {Object.keys(processedPages).length > 0 ? (
+                                                        <>
+                                                            <RefreshCw size={20} />
+                                                            <span>Resume Extraction</span>
+                                                        </>
+                                                    ) : (
+                                                        <>
+                                                            <Search size={20} />
+                                                            <span>Begin Cognitive Extraction</span>
+                                                        </>
+                                                    )}
                                                 </div>
                                             )}
                                         </button>
@@ -890,6 +979,22 @@ export default function App() {
                                     </div>
 
                                     <div className="flex flex-col space-y-4">
+                                        {finalDownloadUrl && (
+                                            <button
+                                                onClick={() => {
+                                                    const link = document.createElement('a');
+                                                    link.href = finalDownloadUrl;
+                                                    link.setAttribute('download', finalFilename || 'Wayleave_Automation_Results.zip');
+                                                    document.body.appendChild(link);
+                                                    link.click();
+                                                    document.body.removeChild(link);
+                                                }}
+                                                className="w-full bg-slate-900 hover:bg-black text-white font-bold py-4 rounded-xl flex items-center justify-center space-x-3 transition-all shadow-md"
+                                            >
+                                                <Download size={20} />
+                                                <span>Download Package</span>
+                                            </button>
+                                        )}
                                         <button
                                             onClick={() => window.location.reload()}
                                             className="w-full bg-brand-primary hover:bg-blue-800 text-white font-bold py-4 rounded-xl flex items-center justify-center space-x-3 transition-all shadow-md"

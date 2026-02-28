@@ -24,6 +24,13 @@ const MapPinningView = ({ missingPins, sitePlanFile, onResolve, onBack }) => {
     const [searchError, setSearchError] = useState(null);
     const pageRefs = useRef({});
     const scrollContainerRef = useRef(null);
+    const scaleContainerRef = useRef(null);
+    const currentScaleRef = useRef(1);
+
+    // Sync ref when React changes it via other buttons (zoom + / zoom -)
+    useEffect(() => {
+        currentScaleRef.current = scale;
+    }, [scale]);
 
     // Mouse Drag/Pan State
     const [isDragging, setIsDragging] = useState(false);
@@ -43,50 +50,50 @@ const MapPinningView = ({ missingPins, sitePlanFile, onResolve, onBack }) => {
             handleNativeWheelRef.current = (e) => {
                 e.preventDefault(); // Stop normal scroll natively (requires passive: false)
 
-                setScale(prevScale => {
-                    const zoomFactor = 0.05;
-                    const newScaleRaw = e.deltaY < 0 ? prevScale + zoomFactor : prevScale - zoomFactor;
-                    const newScale = Math.max(0.2, Math.min(3, newScaleRaw));
+                // Read synchronous scale ref
+                const prevScale = currentScaleRef.current;
+                const zoomFactor = 0.05;
+                const newScaleRaw = e.deltaY < 0 ? prevScale + zoomFactor : prevScale - zoomFactor;
+                const newScale = Math.max(0.2, Math.min(3, newScaleRaw));
 
-                    if (newScale === prevScale) return prevScale;
+                if (newScale === prevScale) return;
 
-                    // Calculate zoom-to-cursor offsets
-                    const container = scrollContainerRef.current;
-                    if (container) {
-                        const rect = container.getBoundingClientRect();
+                const container = scrollContainerRef.current;
+                const scaleContainer = scaleContainerRef.current;
 
-                        // Mouse position relative to the scrollable container viewport
-                        const mouseX = e.clientX - rect.left;
-                        const mouseY = e.clientY - rect.top;
+                if (container && scaleContainer) {
+                    const rect = container.getBoundingClientRect();
 
-                        // Mouse position relative to the TOTAL scrolling canvas (including what is scrolled out of view)
-                        const absoluteMouseX = mouseX + container.scrollLeft;
-                        const absoluteMouseY = mouseY + container.scrollTop;
+                    // Mouse position relative to the scrollable container viewport
+                    const mouseX = e.clientX - rect.left;
+                    const mouseY = e.clientY - rect.top;
 
-                        // The proportion of the mouse position relative to the current scale
-                        const scaleRatio = newScale / prevScale;
+                    // Mouse position relative to the TOTAL scrolling canvas (including what is scrolled out of view)
+                    const absoluteMouseX = mouseX + container.scrollLeft;
+                    const absoluteMouseY = mouseY + container.scrollTop;
 
-                        // Where that exact pixel *will* be after the new scale is applied
-                        const projectedMouseX = absoluteMouseX * scaleRatio;
-                        const projectedMouseY = absoluteMouseY * scaleRatio;
+                    // The proportion of the mouse position relative to the current scale
+                    const scaleRatio = newScale / prevScale;
 
-                        // The difference we need to scroll to keep that pixel visually under the cursor 
-                        // (subtract the viewport relative position so it stays in the exact same spot on screen)
-                        const targetScrollLeft = projectedMouseX - mouseX;
-                        const targetScrollTop = projectedMouseY - mouseY;
+                    // Where that exact pixel *will* be after the new scale is applied
+                    const projectedMouseX = absoluteMouseX * scaleRatio;
+                    const projectedMouseY = absoluteMouseY * scaleRatio;
 
-                        // We must use setTimeout to wait for React to flush the `scale` CSS update to the DOM
-                        // Otherwise the browser scroll bounds will block the scrollTo call
-                        setTimeout(() => {
-                            if (scrollContainerRef.current) {
-                                scrollContainerRef.current.scrollLeft = targetScrollLeft;
-                                scrollContainerRef.current.scrollTop = targetScrollTop;
-                            }
-                        }, 0);
-                    }
+                    // The difference we need to scroll to keep that pixel visually under the cursor 
+                    const targetScrollLeft = projectedMouseX - mouseX;
+                    const targetScrollTop = projectedMouseY - mouseY;
 
-                    return newScale;
-                });
+                    // 1. MANUALLY apply CSS transform synchronously for 60fps butter smoothness
+                    scaleContainer.style.transform = `scale(${newScale})`;
+
+                    // 2. MANUALLY apply scroll offsets exactly simultaneously
+                    container.scrollLeft = targetScrollLeft;
+                    container.scrollTop = targetScrollTop;
+
+                    // 3. Update refs and React state in the background to catch up
+                    currentScaleRef.current = newScale;
+                    setScale(newScale);
+                }
             };
             scrollContainerRef.current.addEventListener('wheel', handleNativeWheelRef.current, { passive: false });
         }
@@ -553,6 +560,7 @@ const MapPinningView = ({ missingPins, sitePlanFile, onResolve, onBack }) => {
                             onMouseLeave={handleMouseUpOrLeave}
                         >
                             <div
+                                ref={scaleContainerRef}
                                 className="inline-flex flex-col items-center p-8 origin-top-left"
                                 style={{ transform: `scale(${scale})`, minWidth: '100%' }}
                             >

@@ -432,6 +432,59 @@ async def get_preview(request: Request):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/search-site-plan")
+async def search_site_plan(request: Request):
+    try:
+        form = await request.form()
+        file = form.get("file")
+        query = form.get("query")
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"detail": f"Form parse error: {str(e)}"})
+    
+    if not file or not query:
+        return JSONResponse(status_code=400, content={"detail": "File and query are required"})
+        
+    try:
+        suffix = os.path.splitext(file.filename)[1]
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            shutil.copyfileobj(file.file, tmp)
+            tmp_path = tmp.name
+            
+        matches = []
+        try:
+            doc = fitz.open(tmp_path)
+            for page_num in range(len(doc)):
+                page = doc[page_num]
+                # fitz.search_for returns a list of fitz.Rect for each matched query
+                # Quads=False is default but good to be explicit for simple bounding boxes
+                found_rects = page.search_for(query, quads=False)
+                
+                # Get page dimensions to normalize relative coordinates
+                pw = page.rect.width
+                ph = page.rect.height
+                
+                if pw == 0 or ph == 0:
+                    continue
+                    
+                for rect in found_rects:
+                    matches.append({
+                        "page": page_num,
+                        "x": rect.x0 / pw,
+                        "y": rect.y0 / ph,
+                        "w": rect.width / pw,
+                        "h": rect.height / ph
+                    })
+            doc.close()
+            return JSONResponse(status_code=200, content={"matches": matches})
+        except Exception as e:
+            if 'doc' in locals(): doc.close()
+            raise HTTPException(status_code=500, detail=f"Search Error: {str(e)}")
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/analyze-site-plan")
 async def analyze_site_plan(request: Request):
     """

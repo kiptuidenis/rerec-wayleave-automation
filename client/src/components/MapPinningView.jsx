@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Loader2, ZoomIn, ZoomOut, CheckCircle, ArrowLeft, MapPin, Map, AlertTriangle } from 'lucide-react';
+import { Loader2, ZoomIn, ZoomOut, CheckCircle, ArrowLeft, MapPin, Map, AlertTriangle, Search, ChevronUp, ChevronDown, X } from 'lucide-react';
 import { motion } from 'framer-motion';
 
 const API_BASE = "http://localhost:8000";
@@ -15,6 +15,15 @@ const MapPinningView = ({ missingPins, sitePlanFile, onResolve, onBack }) => {
     // Multi-page Support
     const [totalPages, setTotalPages] = useState(0);
     const [loadingProgress, setLoadingProgress] = useState({ current: 0, total: 0 });
+
+    // Native Search Support
+    const [searchQuery, setSearchQuery] = useState("");
+    const [searchResults, setSearchResults] = useState([]);
+    const [activeSearchIndex, setActiveSearchIndex] = useState(-1);
+    const [isSearching, setIsSearching] = useState(false);
+    const [searchError, setSearchError] = useState(null);
+    const pageRefs = useRef({});
+    const scrollContainerRef = useRef(null);
 
     // Create the high-res map view
     useEffect(() => {
@@ -118,6 +127,99 @@ const MapPinningView = ({ missingPins, sitePlanFile, onResolve, onBack }) => {
         onResolve(pins);
     };
 
+    const handleSearch = async (e) => {
+        e.preventDefault();
+        if (!searchQuery.trim() || !sitePlanFile) return;
+
+        setIsSearching(true);
+        setSearchError(null);
+        setSearchResults([]);
+        setActiveSearchIndex(-1);
+
+        try {
+            const formData = new FormData();
+            formData.append('file', sitePlanFile);
+            formData.append('query', searchQuery);
+
+            const response = await fetch(`${API_BASE}/search-site-plan`, {
+                method: 'POST',
+                body: formData
+            });
+
+            if (!response.ok) {
+                // Try to parse error message if it's JSON
+                let errorMsg = "Search failed";
+                try {
+                    const errData = await response.json();
+                    errorMsg = errData.detail || errorMsg;
+                } catch (e) { }
+
+                if (response.status === 404) {
+                    errorMsg = "Backend route not found. Did you restart the Python server?";
+                }
+                throw new Error(errorMsg);
+            }
+
+            const data = await response.json();
+
+            setSearchResults(data.matches || []);
+            if (data.matches && data.matches.length > 0) {
+                setActiveSearchIndex(0);
+                scrollToMatch(0, data.matches);
+            } else {
+                setSearchError("No matches found.");
+            }
+        } catch (err) {
+            console.error(err);
+            setSearchError("Failed to search.");
+        } finally {
+            setIsSearching(false);
+        }
+    };
+
+    const scrollToMatch = (index, results = searchResults) => {
+        if (index < 0 || index >= results.length) return;
+        const match = results[index];
+        const pageRef = pageRefs.current[match.page];
+        const container = scrollContainerRef.current;
+
+        if (pageRef && container) {
+            // Calculate absolute position within the scroll container
+            const containerRect = container.getBoundingClientRect();
+            const pageRect = pageRef.getBoundingClientRect();
+
+            // The match's active center point relative to the page
+            const matchCenterY = match.y + (match.h / 2);
+
+            // Calculate offset relative to the scroll container's current scroll position
+            const scrollTargetY = container.scrollTop + (pageRect.top - containerRect.top) + (matchCenterY * pageRect.height) - (containerRect.height / 2);
+
+            container.scrollTo({
+                top: Math.max(0, scrollTargetY),
+                behavior: 'smooth'
+            });
+        }
+    };
+
+    const handleNextSearch = () => {
+        const nextIndex = (activeSearchIndex + 1) % searchResults.length;
+        setActiveSearchIndex(nextIndex);
+        scrollToMatch(nextIndex);
+    };
+
+    const handlePrevSearch = () => {
+        const prevIndex = (activeSearchIndex - 1 + searchResults.length) % searchResults.length;
+        setActiveSearchIndex(prevIndex);
+        scrollToMatch(prevIndex);
+    };
+
+    const clearSearch = () => {
+        setSearchQuery("");
+        setSearchResults([]);
+        setActiveSearchIndex(-1);
+        setSearchError(null);
+    };
+
     return (
         <motion.div
             initial={{ opacity: 0, scale: 0.98 }}
@@ -212,22 +314,85 @@ const MapPinningView = ({ missingPins, sitePlanFile, onResolve, onBack }) => {
                 {/* RIGHT CANVAS: The Map */}
                 <div className="flex-1 bg-slate-200/50 relative overflow-hidden flex flex-col isolate">
                     {/* Controls Overlay */}
-                    <div className="absolute top-4 right-6 z-40 bg-white/90 backdrop-blur border border-slate-200 rounded-xl shadow-xl flex items-center p-1.5 space-x-1">
-                        <button
-                            onClick={() => setScale(s => Math.max(0.2, s - 0.2))}
-                            className="p-2 text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
-                        >
-                            <ZoomOut size={16} />
-                        </button>
-                        <div className="px-2 text-[10px] font-bold text-slate-500 font-mono w-14 text-center select-none">
-                            {Math.round(scale * 100)}%
+                    <div className="absolute top-4 right-6 z-40 bg-white/90 backdrop-blur border border-slate-200 rounded-xl shadow-xl flex flex-col p-1.5 space-y-2">
+                        {/* Zoom Controls */}
+                        <div className="flex items-center space-x-1 justify-center border-b border-slate-100 pb-1.5">
+                            <button
+                                onClick={() => setScale(s => Math.max(0.2, s - 0.2))}
+                                className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition-colors"
+                            >
+                                <ZoomOut size={16} />
+                            </button>
+                            <div className="px-2 text-[10px] font-bold text-slate-500 font-mono w-14 text-center select-none">
+                                {Math.round(scale * 100)}%
+                            </div>
+                            <button
+                                onClick={() => setScale(s => Math.min(3, s + 0.2))}
+                                className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition-colors"
+                            >
+                                <ZoomIn size={16} />
+                            </button>
                         </div>
-                        <button
-                            onClick={() => setScale(s => Math.min(3, s + 0.2))}
-                            className="p-2 text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
-                        >
-                            <ZoomIn size={16} />
-                        </button>
+
+                        {/* Native Search Controls */}
+                        <form onSubmit={handleSearch} className="flex items-center space-x-1">
+                            <div className="relative flex-1">
+                                <Search size={14} className="absolute left-2.5 top-1/2 transform -translate-y-1/2 text-slate-400" />
+                                <input
+                                    type="text"
+                                    value={searchQuery}
+                                    onChange={(e) => setSearchQuery(e.target.value)}
+                                    placeholder="Find in PDF..."
+                                    className="w-full pl-8 pr-8 py-1.5 text-[11px] bg-slate-50 border border-slate-200 rounded focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all font-mono"
+                                />
+                                {searchQuery && (
+                                    <button
+                                        type="button"
+                                        onClick={clearSearch}
+                                        className="absolute right-2 top-1/2 transform -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                                    >
+                                        <X size={12} />
+                                    </button>
+                                )}
+                            </div>
+                            <button
+                                type="submit"
+                                disabled={isSearching || !searchQuery}
+                                className="p-1.5 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded border border-blue-200 disabled:opacity-50 transition-colors"
+                            >
+                                {isSearching ? <Loader2 size={14} className="animate-spin" /> : <Search size={14} />}
+                            </button>
+                        </form>
+
+                        {/* Search Results Navigation */}
+                        {searchResults.length > 0 && (
+                            <div className="flex items-center justify-between px-1 pt-1 border-t border-slate-100">
+                                <span className="text-[10px] font-bold text-slate-500 font-mono">
+                                    {activeSearchIndex + 1} / {searchResults.length}
+                                </span>
+                                <div className="flex space-x-1">
+                                    <button
+                                        type="button"
+                                        onClick={handlePrevSearch}
+                                        className="p-1 text-slate-500 hover:bg-slate-100 rounded"
+                                    >
+                                        <ChevronUp size={14} />
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={handleNextSearch}
+                                        className="p-1 text-slate-500 hover:bg-slate-100 rounded"
+                                    >
+                                        <ChevronDown size={14} />
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+                        {searchError && (
+                            <div className="text-[9px] text-red-500 font-bold px-1 text-center">
+                                {searchError}
+                            </div>
+                        )}
                     </div>
 
                     {isLoadingImage && pageUrls.length === 0 ? (
@@ -240,7 +405,10 @@ const MapPinningView = ({ missingPins, sitePlanFile, onResolve, onBack }) => {
                             {errorMsg}
                         </div>
                     ) : (
-                        <div className="flex-1 overflow-auto relative custom-scrollbar bg-[url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAAAXNSR0IArs4c6QAAACVJREFUKFNjZCASMDKgAnv37v3/n00xigk1gNQwMo3EaDJS3EIAK4oR84z7yNwAAAAASUVORK5CYII=')]">
+                        <div
+                            ref={scrollContainerRef}
+                            className="flex-1 overflow-auto relative custom-scrollbar bg-[url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAAAXNSR0IArs4c6QAAACVJREFUKFNjZCASMDKgAnv37v3/n00xigk1gNQwMo3EaDJS3EIAK4oR84z7yNwAAAAASUVORK5CYII=')]"
+                        >
                             <div
                                 className="inline-flex flex-col items-center p-8 origin-top-left transition-transform duration-200 ease-out"
                                 style={{ transform: `scale(${scale})`, minWidth: '100%' }}
@@ -248,6 +416,7 @@ const MapPinningView = ({ missingPins, sitePlanFile, onResolve, onBack }) => {
                                 {pageUrls.map((url, index) => (
                                     <div
                                         key={index}
+                                        ref={(el) => pageRefs.current[index] = el}
                                         className="relative mb-8 shadow-[0_10px_40px_-10px_rgba(0,0,0,0.3)] bg-white cursor-crosshair ring-1 ring-slate-200/50"
                                         onClick={(e) => handleCanvasClick(e, index)}
                                     >
@@ -264,7 +433,7 @@ const MapPinningView = ({ missingPins, sitePlanFile, onResolve, onBack }) => {
                                             return (
                                                 <div
                                                     key={id}
-                                                    className="absolute transform -translate-x-1/2 -translate-y-[100%] pointer-events-none drop-shadow-md pb-[2px] z-20"
+                                                    className="absolute transform -translate-x-1/2 -translate-y-[100%] pointer-events-none drop-shadow-md pb-[2px] z-30"
                                                     style={{
                                                         left: `${coords._manual_x * 100}%`,
                                                         top: `${coords._manual_y * 100}%`
@@ -277,6 +446,28 @@ const MapPinningView = ({ missingPins, sitePlanFile, onResolve, onBack }) => {
                                                         strokeWidth={1.5}
                                                     />
                                                 </div>
+                                            );
+                                        })}
+
+                                        {/* Render Search Highlights for THIS page */}
+                                        {searchResults.map((match, matchIndex) => {
+                                            if (match.page !== index) return null;
+                                            const isActiveMatch = matchIndex === activeSearchIndex;
+                                            return (
+                                                <div
+                                                    key={`search-${matchIndex}`}
+                                                    className={`absolute pointer-events-none z-20 transition-all duration-300 ${isActiveMatch
+                                                        ? 'ring-4 ring-amber-400 bg-amber-400/30'
+                                                        : 'ring-2 ring-yellow-300 bg-yellow-300/20'
+                                                        }`}
+                                                    style={{
+                                                        left: `${match.x * 100}%`,
+                                                        top: `${match.y * 100}%`,
+                                                        width: `${match.w * 100}%`,
+                                                        height: `${match.h * 100}%`,
+                                                        boxShadow: isActiveMatch ? '0 0 20px 4px rgba(251, 191, 36, 0.4)' : 'none'
+                                                    }}
+                                                />
                                             );
                                         })}
                                     </div>

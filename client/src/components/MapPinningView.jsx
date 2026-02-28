@@ -29,39 +29,28 @@ const MapPinningView = ({ missingPins, sitePlanFile, onResolve, onBack }) => {
     const [isDragging, setIsDragging] = useState(false);
     const dragPosRef = useRef({ x: 0, y: 0, left: 0, top: 0 });
 
-    const handleWheelZoom = (e) => {
-        // e.preventDefault() is often required to stop native scroll, but React's onWheel 
-        // doesn't support passive: false directly. We'll use a hack if needed, or just let 
-        // it scale while capturing the event.
-        if (e.ctrlKey || e.metaKey || !isDragging) {
-            // Allow zoom without modifiers just by scrolling
-            setScale(s => {
-                const zoomFactor = 0.1;
-                const newScale = e.deltaY < 0 ? s + zoomFactor : s - zoomFactor;
-                return Math.max(0.2, Math.min(3, newScale));
-            });
+    const handleNativeWheelRef = useRef(null);
+
+    // Provide a callback ref to attach the listener exactly when the element mounts
+    const setScrollContainerRef = React.useCallback((node) => {
+        if (scrollContainerRef.current && handleNativeWheelRef.current) {
+            scrollContainerRef.current.removeEventListener('wheel', handleNativeWheelRef.current);
         }
-    };
 
-    // To properly prevent default scrolling on wheel, we must attach via a non-passive ref listener
-    useEffect(() => {
-        const container = scrollContainerRef.current;
-        if (!container) return;
+        scrollContainerRef.current = node;
 
-        const handleNativeWheel = (e) => {
-            e.preventDefault(); // Stop normal scroll
-            setScale(s => {
-                // Adjust zoom speed to be smoother
-                const zoomFactor = 0.05;
-                // deltaY is positive when scrolling down (zoom out)
-                const newScale = e.deltaY < 0 ? s + zoomFactor : s - zoomFactor;
-                return Math.max(0.2, Math.min(3, newScale));
-            });
-        };
-
-        container.addEventListener('wheel', handleNativeWheel, { passive: false });
-        return () => container.removeEventListener('wheel', handleNativeWheel);
-    }); // Run on every render to guarantee the non-passive listener is bound correctly to the latest ref
+        if (scrollContainerRef.current) {
+            handleNativeWheelRef.current = (e) => {
+                e.preventDefault(); // Stop normal scroll natively (requires passive: false)
+                setScale(s => {
+                    const zoomFactor = 0.05;
+                    const newScale = e.deltaY < 0 ? s + zoomFactor : s - zoomFactor;
+                    return Math.max(0.2, Math.min(3, newScale));
+                });
+            };
+            scrollContainerRef.current.addEventListener('wheel', handleNativeWheelRef.current, { passive: false });
+        }
+    }, []);
 
     // Create the high-res map view
     useEffect(() => {
@@ -516,7 +505,7 @@ const MapPinningView = ({ missingPins, sitePlanFile, onResolve, onBack }) => {
                         </div>
                     ) : (
                         <div
-                            ref={scrollContainerRef}
+                            ref={setScrollContainerRef}
                             className={`flex-1 overflow-auto relative bg-[url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAAAXNSR0IArs4c6QAAACVJREFUKFNjZCASMDKgAnv37v3/n00xigk1gNQwMo3EaDJS3EIAK4oR84z7yNwAAAAASUVORK5CYII=')] select-none ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
                             onMouseDown={handleMouseDown}
                             onMouseMove={handleMouseMove}

@@ -29,24 +29,39 @@ const MapPinningView = ({ missingPins, sitePlanFile, onResolve, onBack }) => {
     const [isDragging, setIsDragging] = useState(false);
     const dragPosRef = useRef({ x: 0, y: 0, left: 0, top: 0 });
 
-    // Custom Wheel Zoom event (Non-passive to prevent scrolling)
-    useEffect(() => {
-        const container = scrollContainerRef.current;
-        if (!container) return;
-
-        const handleWheel = (e) => {
-            e.preventDefault(); // Stop normal scroll
+    const handleWheelZoom = (e) => {
+        // e.preventDefault() is often required to stop native scroll, but React's onWheel 
+        // doesn't support passive: false directly. We'll use a hack if needed, or just let 
+        // it scale while capturing the event.
+        if (e.ctrlKey || e.metaKey || !isDragging) {
+            // Allow zoom without modifiers just by scrolling
             setScale(s => {
                 const zoomFactor = 0.1;
                 const newScale = e.deltaY < 0 ? s + zoomFactor : s - zoomFactor;
                 return Math.max(0.2, Math.min(3, newScale));
             });
+        }
+    };
+
+    // To properly prevent default scrolling on wheel, we must attach via a non-passive ref listener
+    useEffect(() => {
+        const container = scrollContainerRef.current;
+        if (!container) return;
+
+        const handleNativeWheel = (e) => {
+            e.preventDefault(); // Stop normal scroll
+            setScale(s => {
+                // Adjust zoom speed to be smoother
+                const zoomFactor = 0.05;
+                // deltaY is positive when scrolling down (zoom out)
+                const newScale = e.deltaY < 0 ? s + zoomFactor : s - zoomFactor;
+                return Math.max(0.2, Math.min(3, newScale));
+            });
         };
 
-        // Add non-passive event listener
-        container.addEventListener('wheel', handleWheel, { passive: false });
-        return () => container.removeEventListener('wheel', handleWheel);
-    }, []);
+        container.addEventListener('wheel', handleNativeWheel, { passive: false });
+        return () => container.removeEventListener('wheel', handleNativeWheel);
+    }, [isLoadingImage, errorMsg]); // Re-bind when the container actually renders!
 
     // Create the high-res map view
     useEffect(() => {

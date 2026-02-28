@@ -223,22 +223,26 @@ const MapPinningView = ({ missingPins, sitePlanFile, isFinalizing, progress, sta
     };
 
     const handleComplete = () => {
-        // Auto-assign any completely unresolved pins as "Not on Map" when they try to finalize
-        const autoNotOnMapIds = {};
-        const completelyUnresolved = missingPins.filter(p => !pins[p._id]);
+        // Collect all pins that haven't been resolved yet
+        const newPins = { ...pins };
+        let newlyFlagged = 0;
 
-        completelyUnresolved.forEach(p => {
-            autoNotOnMapIds[p._id] = { _not_on_map: true };
+        missingPins.forEach(p => {
+            if (!newPins[p._id]) {
+                newPins[p._id] = { _not_on_map: true };
+                newlyFlagged++;
+            }
         });
 
-        const pendingPins = { ...pins, ...autoNotOnMapIds };
+        if (newlyFlagged > 0) {
+            setPins(newPins);
+        }
 
-        const notOnMapRecords = missingPins.filter(p => pendingPins[p._id] && pendingPins[p._id]._not_on_map);
+        const notOnMapRecords = missingPins.filter(p => newPins[p._id] && newPins[p._id]._not_on_map);
         if (notOnMapRecords.length > 0) {
-            setPins(pendingPins); // ensure state is synced before modal
             setShowConfirmModal(true);
         } else {
-            onResolve(pendingPins);
+            onResolve(newPins);
         }
     };
 

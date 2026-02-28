@@ -29,6 +29,7 @@ import axios from 'axios';
 import { HotTable } from '@handsontable/react';
 import { registerAllModules } from 'handsontable/registry';
 import 'handsontable/dist/handsontable.full.min.css';
+import MapPinningView from './components/MapPinningView';
 
 // register Handsontable's modules
 try {
@@ -66,6 +67,8 @@ export default function App() {
     const [skippedCount, setSkippedCount] = useState(0);
     const [lightboxZoom, setLightboxZoom] = useState(1);
 
+    // Step 2.5 State
+    const [missingPins, setMissingPins] = useState([]);
     const [extractTimeElapsed, setExtractTimeElapsed] = useState(0);
     const [finalizeTimeElapsed, setFinalizeTimeElapsed] = useState(0);
     const [totalPages, setTotalPages] = useState(0);
@@ -419,6 +422,10 @@ export default function App() {
                             const percent = Math.round((event.current / event.total) * 100);
                             setProgress(percent);
                             setStatusMsg(event.message);
+                        } else if (event.type === 'missing_pins') {
+                            setMissingPins(event.missing_rows);
+                            setStep(2.5);
+                            return; // Break out! Let user resolve coordinates
                         } else if (event.type === 'error') {
                             throw new Error(event.message);
                         } else if (event.type === 'complete') {
@@ -949,6 +956,27 @@ export default function App() {
                                 </motion.div>
                             )}
                         </AnimatePresence>
+
+                        {step === 2.5 && (
+                            <MapPinningView
+                                missingPins={missingPins}
+                                sitePlanFile={sitePlanFile}
+                                onBack={() => {
+                                    setStep(2);
+                                }}
+                                onResolve={(pins) => {
+                                    // Apply pins to the results state
+                                    const newResults = results.map(r => {
+                                        if (pins[r._id]) {
+                                            return { ...r, ...pins[r._id] };
+                                        }
+                                        return r;
+                                    });
+                                    setResults(newResults);
+                                    setStep(2);
+                                }}
+                            />
+                        )}
 
                         {step === 3 && (
                             <motion.div

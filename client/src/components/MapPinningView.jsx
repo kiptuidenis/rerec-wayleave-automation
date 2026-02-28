@@ -553,7 +553,7 @@ const MapPinningView = ({ missingPins, sitePlanFile, onResolve, onBack }) => {
                             onMouseLeave={handleMouseUpOrLeave}
                         >
                             <div
-                                className="inline-flex flex-col items-center p-8 origin-top-left transition-transform duration-200 ease-out"
+                                className="inline-flex flex-col items-center p-8 origin-top-left"
                                 style={{ transform: `scale(${scale})`, minWidth: '100%' }}
                             >
                                 {pageUrls.map((url, index) => (

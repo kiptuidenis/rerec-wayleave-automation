@@ -42,10 +42,50 @@ const MapPinningView = ({ missingPins, sitePlanFile, onResolve, onBack }) => {
         if (scrollContainerRef.current) {
             handleNativeWheelRef.current = (e) => {
                 e.preventDefault(); // Stop normal scroll natively (requires passive: false)
-                setScale(s => {
+
+                setScale(prevScale => {
                     const zoomFactor = 0.05;
-                    const newScale = e.deltaY < 0 ? s + zoomFactor : s - zoomFactor;
-                    return Math.max(0.2, Math.min(3, newScale));
+                    const newScaleRaw = e.deltaY < 0 ? prevScale + zoomFactor : prevScale - zoomFactor;
+                    const newScale = Math.max(0.2, Math.min(3, newScaleRaw));
+
+                    if (newScale === prevScale) return prevScale;
+
+                    // Calculate zoom-to-cursor offsets
+                    const container = scrollContainerRef.current;
+                    if (container) {
+                        const rect = container.getBoundingClientRect();
+
+                        // Mouse position relative to the scrollable container viewport
+                        const mouseX = e.clientX - rect.left;
+                        const mouseY = e.clientY - rect.top;
+
+                        // Mouse position relative to the TOTAL scrolling canvas (including what is scrolled out of view)
+                        const absoluteMouseX = mouseX + container.scrollLeft;
+                        const absoluteMouseY = mouseY + container.scrollTop;
+
+                        // The proportion of the mouse position relative to the current scale
+                        const scaleRatio = newScale / prevScale;
+
+                        // Where that exact pixel *will* be after the new scale is applied
+                        const projectedMouseX = absoluteMouseX * scaleRatio;
+                        const projectedMouseY = absoluteMouseY * scaleRatio;
+
+                        // The difference we need to scroll to keep that pixel visually under the cursor 
+                        // (subtract the viewport relative position so it stays in the exact same spot on screen)
+                        const targetScrollLeft = projectedMouseX - mouseX;
+                        const targetScrollTop = projectedMouseY - mouseY;
+
+                        // We must use setTimeout to wait for React to flush the `scale` CSS update to the DOM
+                        // Otherwise the browser scroll bounds will block the scrollTo call
+                        setTimeout(() => {
+                            if (scrollContainerRef.current) {
+                                scrollContainerRef.current.scrollLeft = targetScrollLeft;
+                                scrollContainerRef.current.scrollTop = targetScrollTop;
+                            }
+                        }, 0);
+                    }
+
+                    return newScale;
                 });
             };
             scrollContainerRef.current.addEventListener('wheel', handleNativeWheelRef.current, { passive: false });

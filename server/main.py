@@ -231,7 +231,11 @@ async def finalize_project(
                     
                     _manual_x = row.get("_manual_x")
                     _manual_y = row.get("_manual_y")
+                    _not_on_map = row.get("_not_on_map")
                     
+                    if _not_on_map:
+                        continue # Skip looking for this pin entirely
+                        
                     if _manual_x is not None and _manual_y is not None:
                         continue # User manually pinned this one, it's good!
                         
@@ -277,7 +281,11 @@ async def finalize_project(
                         
                         _manual_x = row.get("_manual_x")
                         _manual_y = row.get("_manual_y")
+                        _not_on_map = row.get("_not_on_map")
                         
+                        if _not_on_map:
+                            continue # Ignore this record from overlay generation entirely
+                            
                         if (name or _manual_x) and box:
                             match = None
                             

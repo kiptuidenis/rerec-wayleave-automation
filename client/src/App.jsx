@@ -372,7 +372,7 @@ export default function App() {
         }
     };
 
-    const handleFinalize = async () => {
+    const handleFinalize = async (overrideResults = null) => {
         if (!sitePlanFile || !excelTemplate) {
             setError("Site Plan and Excel Template are required.");
             return;
@@ -384,9 +384,13 @@ export default function App() {
         setStatusMsg("Preparing package generation...");
         setFinalizeTimeElapsed(0);
 
+        // Prevent passing React click events as overrideResults
+        const isEvent = overrideResults && overrideResults.nativeEvent !== undefined;
+        const dataToProcess = (!isEvent && overrideResults) ? overrideResults : results;
+
         try {
             const formData = new FormData();
-            const jsonBlob = new Blob([JSON.stringify(results)], { type: 'application/json' });
+            const jsonBlob = new Blob([JSON.stringify(dataToProcess)], { type: 'application/json' });
             formData.append('extraction_results_file', jsonBlob, 'results.json');
             formData.append('site_plan', sitePlanFile);
             formData.append('excel_template', excelTemplate);
@@ -961,6 +965,10 @@ export default function App() {
                             <MapPinningView
                                 missingPins={missingPins}
                                 sitePlanFile={sitePlanFile}
+                                isFinalizing={isFinalizing}
+                                progress={progress}
+                                statusMsg={statusMsg}
+                                finalizeTimeElapsed={finalizeTimeElapsed}
                                 onBack={() => {
                                     setStep(2);
                                 }}
@@ -973,7 +981,8 @@ export default function App() {
                                         return r;
                                     });
                                     setResults(newResults);
-                                    setStep(2);
+                                    // Seamlessly trigger finalization immediately
+                                    handleFinalize(newResults);
                                 }}
                             />
                         )}

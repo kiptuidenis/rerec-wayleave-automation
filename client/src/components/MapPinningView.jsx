@@ -61,7 +61,7 @@ const MapPinningView = ({ missingPins, sitePlanFile, onResolve, onBack }) => {
 
         container.addEventListener('wheel', handleNativeWheel, { passive: false });
         return () => container.removeEventListener('wheel', handleNativeWheel);
-    }, [isLoadingImage, errorMsg]); // Re-bind when the container actually renders!
+    }); // Run on every render to guarantee the non-passive listener is bound correctly to the latest ref
 
     // Create the high-res map view
     useEffect(() => {

@@ -184,20 +184,48 @@ const MapPinningView = ({ missingPins, sitePlanFile, onResolve, onBack }) => {
         const container = scrollContainerRef.current;
 
         if (pageRef && container) {
-            // Calculate absolute position within the scroll container
+            // Force zoom to 200% if we are currently zoomed out
+            const ZOOM_LEVEL = 2.0;
+            const targetScale = Math.max(scale, ZOOM_LEVEL);
+            if (scale !== targetScale) {
+                setScale(targetScale);
+            }
+
             const containerRect = container.getBoundingClientRect();
-            const pageRect = pageRef.getBoundingClientRect();
 
-            // The match's active center point relative to the page
+            // 1. Get raw, unscaled dimensions of the page container
+            const unscaledPageWidth = pageRef.offsetWidth;
+            const unscaledPageHeight = pageRef.offsetHeight;
+
+            // 2. Get unscaled offsets relative to the scaled flex wrapper
+            const unscaledPageTop = pageRef.offsetTop;
+            const unscaledPageLeft = pageRef.offsetLeft;
+
+            // 3. Find the exact center of the highlight relative to its page (unscaled)
             const matchCenterY = match.y + (match.h / 2);
+            const matchCenterX = match.x + (match.w / 2);
 
-            // Calculate offset relative to the scroll container's current scroll position
-            const scrollTargetY = container.scrollTop + (pageRect.top - containerRect.top) + (matchCenterY * pageRect.height) - (containerRect.height / 2);
+            // 4. Calculate absolute unscaled coordinates of the point from the top-left of the wrapper
+            const absUnscaledY = unscaledPageTop + (matchCenterY * unscaledPageHeight);
+            const absUnscaledX = unscaledPageLeft + (matchCenterX * unscaledPageWidth);
 
-            container.scrollTo({
-                top: Math.max(0, scrollTargetY),
-                behavior: 'smooth'
-            });
+            // 5. Apply the target scale to project where this point will be in scrolled pixels
+            const targetScaledY = absUnscaledY * targetScale;
+            const targetScaledX = absUnscaledX * targetScale;
+
+            // 6. Subtract half the container frame to perfectly center the match on screen
+            const scrollTargetY = targetScaledY - (containerRect.height / 2);
+            const scrollTargetX = targetScaledX - (containerRect.width / 2);
+
+            // Wait specifically for React state to flush the `scale` CSS update before scrolling
+            // Otherwise the browser scroll bounds block the calculation
+            setTimeout(() => {
+                container.scrollTo({
+                    top: Math.max(0, scrollTargetY),
+                    left: Math.max(0, scrollTargetX),
+                    behavior: 'smooth'
+                });
+            }, 150);
         }
     };
 

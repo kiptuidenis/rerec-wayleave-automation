@@ -526,7 +526,7 @@ export default function App() {
                 <nav className="bg-white border-b border-slate-200 sticky top-0 z-50">
                     <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
                         <div className="flex items-center space-x-3">
-                            <div className="bg-brand-primary p-1.5 rounded-lg shadow-sm">
+                            <div className="bg-brand-primary p-2 rounded-xl shadow-md">
                                 <ShieldCheck className="text-white" size={24} />
                             </div>
                             <div>
@@ -609,17 +609,28 @@ export default function App() {
                                             <p className="text-sm text-slate-500 mt-1">Select scanned consent forms for processing and metadata extraction.</p>
                                         </div>
 
-                                        <label className="flex-1 flex flex-col items-center justify-center border-2 border-dashed border-slate-200 rounded-2xl p-12 hover:bg-slate-50 hover:border-brand-primary/40 transition-all cursor-pointer group mb-6 bg-slate-50/50">
-                                            <input type="file" multiple className="hidden" onChange={(e) => {
-                                                setConsentFiles(Array.from(e.target.files));
-                                                setProcessedPages({}); // Reset resume state when files change
-                                            }} />
-                                            <div className="bg-white p-4 rounded-full shadow-sm border border-slate-200 group-hover:scale-110 transition-transform duration-300 mb-4">
-                                                <Upload className="text-slate-400 group-hover:text-brand-primary" size={32} />
-                                            </div>
-                                            <p className="text-slate-900 font-bold text-lg">Click to Upload Documents</p>
-                                            <p className="text-slate-400 text-xs mt-2 uppercase tracking-widest font-bold">Standard PDF Format Only</p>
-                                        </label>
+                                        {consentFiles.length === 0 ? (
+                                            <label className="flex-1 flex flex-col items-center justify-center border-2 border-dashed border-slate-200 rounded-2xl p-12 hover:bg-slate-50 hover:border-brand-primary/40 transition-all cursor-pointer group mb-6 bg-slate-50/50">
+                                                <input type="file" multiple className="hidden" onChange={(e) => {
+                                                    setConsentFiles(Array.from(e.target.files));
+                                                    setProcessedPages({}); // Reset resume state when files change
+                                                }} />
+                                                <div className="bg-white p-4 rounded-full shadow-sm border border-slate-200 group-hover:scale-110 transition-transform duration-300 mb-4">
+                                                    <Upload className="text-slate-400 group-hover:text-brand-primary" size={32} />
+                                                </div>
+                                                <p className="text-slate-900 font-bold text-lg">Click to Upload Documents</p>
+                                                <p className="text-slate-400 text-xs mt-2 uppercase tracking-widest font-bold">Standard PDF Format Only</p>
+                                            </label>
+                                        ) : (
+                                            <label className="flex flex-row items-center justify-center space-x-2 border-2 border-dashed border-slate-200 rounded-xl py-3 hover:bg-slate-50 hover:border-brand-primary/40 transition-all cursor-pointer group mb-6 bg-slate-50/50">
+                                                <input type="file" multiple className="hidden" onChange={(e) => {
+                                                    setConsentFiles(Array.from(e.target.files));
+                                                    setProcessedPages({});
+                                                }} />
+                                                <Upload className="text-slate-400 group-hover:text-brand-primary transition-colors" size={16} />
+                                                <p className="text-slate-600 font-semibold text-sm group-hover:text-brand-primary transition-colors">Select different documents</p>
+                                            </label>
+                                        )}
 
                                         {consentFiles.length > 0 && (
                                             <div className="bg-blue-50/50 rounded-xl p-4 border border-blue-100 mb-8 items-center flex justify-between">
@@ -640,7 +651,7 @@ export default function App() {
                                         <button
                                             onClick={handleExtract}
                                             disabled={loading || consentFiles.length === 0}
-                                            className="w-full bg-brand-primary hover:bg-blue-800 text-white font-bold py-4 rounded-xl flex flex-col items-center justify-center transition-all shadow-md active:transform active:scale-[0.99] disabled:opacity-40 overflow-hidden relative"
+                                            className="w-full bg-brand-accent hover:brightness-110 text-white font-bold py-4 rounded-xl flex flex-col items-center justify-center transition-all shadow-lg hover:shadow-xl active:transform active:scale-[0.99] disabled:opacity-40 overflow-hidden relative"
                                         >
                                             {loading ? (
                                                 <div className="w-full px-8 flex flex-col items-center">

@@ -930,162 +930,173 @@ export default function App() {
                                             )}
                                         </div>
 
-                                        {step === 2.5 && (
-                                            <MapPinningView
-                                                missingPins={missingPins}
-                                                sitePlanFile={sitePlanFile}
-                                                onBack={() => {
-                                                    setStep(2);
-                                                    setIsFinalizing(false);
-                                                }}
-                                                onResolve={(pins) => {
-                                                    // Apply pins to the results state
-                                                    const newResults = results.map(r => {
-                                                        if (pins[r._id]) {
-                                                            return { ...r, ...pins[r._id] };
-                                                        }
-                                                        return r;
-                                                    });
-                                                    setResults(newResults);
-                                                    setStep(3); // Linear Flow: Jump instantly to the loading step visually
-                                                    handleFinalize(newResults); // Go straight to generating step
-                                                }}
-                                            />
-                                        )}
-
-                                        {step === 3 && (
-                                            <motion.div
-                                                key="step3"
-                                                initial={{ opacity: 0, y: 30 }}
-                                                animate={{ opacity: 1, y: 0 }}
-                                                className="max-w-xl mx-auto text-center py-20"
-                                            >
-                                                <div className="card-shell p-12 bg-white relative overflow-hidden">
-                                                    <div className="absolute top-0 left-0 w-full h-1.5 bg-brand-primary" />
-
-                                                    {isFinalizing ? (
-                                                        <div className="py-8">
-                                                            <div className="bg-blue-50 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-8 text-blue-600 shadow-sm border border-blue-100">
-                                                                <Loader2 size={40} className="animate-spin" />
-                                                            </div>
-                                                            <h2 className="text-2xl font-bold text-slate-900 mb-2 tracking-tight animate-pulse">Generating Distribution Package</h2>
-                                                            <p className="text-slate-500 mb-10 leading-relaxed font-medium text-sm">
-                                                                {statusMsg}
-                                                            </p>
-
-                                                            <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden mb-3">
-                                                                <motion.div
-                                                                    className="h-full bg-brand-primary"
-                                                                    initial={{ width: 0 }}
-                                                                    animate={{ width: `${progress}%` }}
-                                                                />
-                                                            </div>
-                                                            <div className="flex justify-between w-full">
-                                                                <span className="text-[10px] text-slate-400 uppercase tracking-widest font-bold">Progress: {progress}%</span>
-                                                                <span className="text-[10px] text-slate-400 uppercase tracking-widest font-bold font-mono">Elapsed: {formatTimer(finalizeTimeElapsed)}</span>
-                                                            </div>
-                                                        </div>
-                                                    ) : (
-                                                        <>
-                                                            <div className="bg-emerald-50 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-8 text-emerald-600 shadow-sm border border-emerald-100">
-                                                                <CheckCircle size={40} />
-                                                            </div>
-                                                            <h2 className="text-3xl font-bold text-slate-900 mb-4 tracking-tight">Processing Complete</h2>
-                                                            <p className="text-slate-500 mb-8 leading-relaxed font-medium">
-                                                                Your wayleave automation package has been generated successfully. All metadata has been extracted, validated, and bundled into a final distribution archive.
-                                                            </p>
-
-                                                            <div className="grid grid-cols-2 gap-4 mb-10">
-                                                                <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 shadow-sm text-center flex flex-col justify-center">
-                                                                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Total Processing Time</p>
-                                                                    <p className="text-2xl font-black text-slate-800 tracking-tight font-mono">{formatTimer(extractTimeElapsed + finalizeTimeElapsed)}</p>
-                                                                </div>
-                                                                <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 shadow-sm text-center flex flex-col justify-center">
-                                                                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Total Pages Processed</p>
-                                                                    <p className="text-2xl font-black text-slate-800 tracking-tight font-mono">{totalPages}</p>
-                                                                </div>
-                                                            </div>
-
-                                                            <div className="flex flex-col space-y-4">
-                                                                {finalDownloadUrl && (
-                                                                    <button
-                                                                        onClick={() => {
-                                                                            const link = document.createElement('a');
-                                                                            link.href = finalDownloadUrl;
-                                                                            link.setAttribute('download', finalFilename || 'Wayleave_Automation_Results.zip');
-                                                                            document.body.appendChild(link);
-                                                                            link.click();
-                                                                            document.body.removeChild(link);
-                                                                        }}
-                                                                        className="w-full bg-slate-900 hover:bg-black text-white font-bold py-4 rounded-xl flex items-center justify-center space-x-3 transition-all shadow-md"
-                                                                    >
-                                                                        <Download size={20} />
-                                                                        <span>Download Package</span>
-                                                                    </button>
-                                                                )}
-                                                                <button
-                                                                    onClick={() => window.location.reload()}
-                                                                    className="w-full bg-brand-primary hover:bg-blue-800 text-white font-bold py-4 rounded-xl flex items-center justify-center space-x-3 transition-all shadow-md"
-                                                                >
-                                                                    <Zap size={20} />
-                                                                    <span>Initialize New Project</span>
-                                                                </button>
-                                                            </div>
-                                                        </>
-                                                    )}
-                                                </div>
-                                            </motion.div>
-                                        )}
+                                        <div className="mt-4 p-4 bg-white rounded-lg border border-slate-200 shadow-sm">
+                                            <p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest mb-1">Source File</p>
+                                            <p className="text-[11px] font-bold text-slate-700 truncate">
+                                                {results.find(r => r._id === selectedId)?._file_name || 'No file selected'}
+                                            </p>
+                                        </div>
                                     </div>
                                 </div>
-                            </div>
-                        );
+                            </motion.div>
+                        )}
+
+                        {step === 2.5 && (
+                            <MapPinningView
+                                missingPins={missingPins}
+                                sitePlanFile={sitePlanFile}
+                                onBack={() => {
+                                    setStep(2);
+                                    setIsFinalizing(false);
+                                }}
+                                onResolve={(pins) => {
+                                    // Apply pins to the results state
+                                    const newResults = results.map(r => {
+                                        if (pins[r._id]) {
+                                            return { ...r, ...pins[r._id] };
+                                        }
+                                        return r;
+                                    });
+                                    setResults(newResults);
+                                    setStep(3); // Linear Flow: Jump instantly to the loading step visually
+                                    handleFinalize(newResults); // Go straight to generating step
+                                }}
+                            />
+                        )}
+
+                        {step === 3 && (
+                            <motion.div
+                                key="step3"
+                                initial={{ opacity: 0, y: 30 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                className="max-w-xl mx-auto text-center py-20"
+                            >
+                                <div className="card-shell p-12 bg-white relative overflow-hidden">
+                                    <div className="absolute top-0 left-0 w-full h-1.5 bg-brand-primary" />
+
+                                    {isFinalizing ? (
+                                        <div className="py-8">
+                                            <div className="bg-blue-50 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-8 text-blue-600 shadow-sm border border-blue-100">
+                                                <Loader2 size={40} className="animate-spin" />
+                                            </div>
+                                            <h2 className="text-2xl font-bold text-slate-900 mb-2 tracking-tight animate-pulse">Generating Distribution Package</h2>
+                                            <p className="text-slate-500 mb-10 leading-relaxed font-medium text-sm">
+                                                {statusMsg}
+                                            </p>
+
+                                            <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden mb-3">
+                                                <motion.div
+                                                    className="h-full bg-brand-primary"
+                                                    initial={{ width: 0 }}
+                                                    animate={{ width: `${progress}%` }}
+                                                />
+                                            </div>
+                                            <div className="flex justify-between w-full">
+                                                <span className="text-[10px] text-slate-400 uppercase tracking-widest font-bold">Progress: {progress}%</span>
+                                                <span className="text-[10px] text-slate-400 uppercase tracking-widest font-bold font-mono">Elapsed: {formatTimer(finalizeTimeElapsed)}</span>
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <>
+                                            <div className="bg-emerald-50 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-8 text-emerald-600 shadow-sm border border-emerald-100">
+                                                <CheckCircle size={40} />
+                                            </div>
+                                            <h2 className="text-3xl font-bold text-slate-900 mb-4 tracking-tight">Processing Complete</h2>
+                                            <p className="text-slate-500 mb-8 leading-relaxed font-medium">
+                                                Your wayleave automation package has been generated successfully. All metadata has been extracted, validated, and bundled into a final distribution archive.
+                                            </p>
+
+                                            <div className="grid grid-cols-2 gap-4 mb-10">
+                                                <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 shadow-sm text-center flex flex-col justify-center">
+                                                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Total Processing Time</p>
+                                                    <p className="text-2xl font-black text-slate-800 tracking-tight font-mono">{formatTimer(extractTimeElapsed + finalizeTimeElapsed)}</p>
+                                                </div>
+                                                <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 shadow-sm text-center flex flex-col justify-center">
+                                                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Total Pages Processed</p>
+                                                    <p className="text-2xl font-black text-slate-800 tracking-tight font-mono">{totalPages}</p>
+                                                </div>
+                                            </div>
+
+                                            <div className="flex flex-col space-y-4">
+                                                {finalDownloadUrl && (
+                                                    <button
+                                                        onClick={() => {
+                                                            const link = document.createElement('a');
+                                                            link.href = finalDownloadUrl;
+                                                            link.setAttribute('download', finalFilename || 'Wayleave_Automation_Results.zip');
+                                                            document.body.appendChild(link);
+                                                            link.click();
+                                                            document.body.removeChild(link);
+                                                        }}
+                                                        className="w-full bg-slate-900 hover:bg-black text-white font-bold py-4 rounded-xl flex items-center justify-center space-x-3 transition-all shadow-md"
+                                                    >
+                                                        <Download size={20} />
+                                                        <span>Download Package</span>
+                                                    </button>
+                                                )}
+                                                <button
+                                                    onClick={() => window.location.reload()}
+                                                    className="w-full bg-brand-primary hover:bg-blue-800 text-white font-bold py-4 rounded-xl flex items-center justify-center space-x-3 transition-all shadow-md"
+                                                >
+                                                    <Zap size={20} />
+                                                    <span>Initialize New Project</span>
+                                                </button>
+                                            </div>
+                                        </>
+                                    )}
+                                </div>
+                            </motion.div>
+                        )}
+                    </div>
+                </div>
+            </div>
+        );
     } catch (err) {
-                            console.error("App Render Error:", err);
-                        return (
-                        <div className="min-h-screen bg-slate-50 flex items-center justify-center p-10">
-                            <div className="max-w-md w-full bg-white rounded-2xl shadow-xl border border-red-100 p-10 text-center">
-                                <div className="bg-red-50 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-6 text-red-600">
-                                    <AlertCircle size={32} />
-                                </div>
-                                <h1 className="text-xl font-bold text-slate-900 mb-2">Application Error</h1>
-                                <p className="text-sm text-slate-500 mb-6">
-                                    The application encountered a critical error during rendering. Please check the browser console for details.
-                                </p>
-                                <div className="bg-slate-50 rounded-lg p-4 text-left border border-slate-200 mb-6">
-                                    <p className="text-[10px] font-mono text-red-600 break-all">{err.message}</p>
-                                </div>
-                                <button
-                                    onClick={() => window.location.reload()}
-                                    className="w-full bg-slate-900 text-white py-3 rounded-xl font-bold text-sm"
-                                >
-                                    Try Refreshing
-                                </button>
-                            </div>
-                        </div>
-                        );
+        console.error("App Render Error:", err);
+        return (
+            <div className="min-h-screen bg-slate-50 flex items-center justify-center p-10">
+                <div className="max-w-md w-full bg-white rounded-2xl shadow-xl border border-red-100 p-10 text-center">
+                    <div className="bg-red-50 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-6 text-red-600">
+                        <AlertCircle size={32} />
+                    </div>
+                    <h1 className="text-xl font-bold text-slate-900 mb-2">Application Error</h1>
+                    <p className="text-sm text-slate-500 mb-6">
+                        The application encountered a critical error during rendering. Please check the browser console for details.
+                    </p>
+                    <div className="bg-slate-50 rounded-lg p-4 text-left border border-slate-200 mb-6">
+                        <p className="text-[10px] font-mono text-red-600 break-all">{err.message}</p>
+                    </div>
+                    <button
+                        onClick={() => window.location.reload()}
+                        className="w-full bg-slate-900 text-white py-3 rounded-xl font-bold text-sm"
+                    >
+                        Try Refreshing
+                    </button>
+                </div>
+            </div>
+        );
     }
 }
 
-                        function FileUploadZone({label, file, setFile, icon}) {
+function FileUploadZone({ label, file, setFile, icon }) {
     return (
-                        <div className="space-y-2">
-                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">{label}</span>
-                            <label className={`flex items-center space-x-4 p-4 rounded-xl border-2 border-dashed transition-all cursor-pointer bg-slate-50/50 ${file ? 'border-emerald-200 bg-emerald-50/30' : 'border-slate-200 hover:border-brand-primary/40 hover:bg-slate-50'
-                                }`}>
-                                <input type="file" className="hidden" onChange={(e) => setFile(e.target.files[0])} />
-                                <div className={`p-2.5 rounded-lg shadow-sm border ${file ? 'bg-white border-emerald-100 text-emerald-600' : 'bg-white border-slate-100 text-slate-400'
-                                    }`}>
-                                    {file ? <CheckCircle size={18} /> : icon}
-                                </div>
-                                <div className="flex-1 min-w-0">
-                                    <p className={`text-[11px] font-bold truncate ${file ? 'text-emerald-800' : 'text-slate-500 uppercase tracking-wider'}`}>
-                                        {file ? file.name : 'Select File'}
-                                    </p>
-                                    {file && <p className="text-[9px] text-emerald-600 font-bold uppercase tracking-widest mt-0.5">Ready for Sync</p>}
-                                </div>
-                            </label>
-                        </div>
-                        );
+        <div className="space-y-2">
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">{label}</span>
+            <label className={`flex items-center space-x-4 p-4 rounded-xl border-2 border-dashed transition-all cursor-pointer bg-slate-50/50 ${file ? 'border-emerald-200 bg-emerald-50/30' : 'border-slate-200 hover:border-brand-primary/40 hover:bg-slate-50'
+                }`}>
+                <input type="file" className="hidden" onChange={(e) => setFile(e.target.files[0])} />
+                <div className={`p-2.5 rounded-lg shadow-sm border ${file ? 'bg-white border-emerald-100 text-emerald-600' : 'bg-white border-slate-100 text-slate-400'
+                    }`}>
+                    {file ? <CheckCircle size={18} /> : icon}
+                </div>
+                <div className="flex-1 min-w-0">
+                    <p className={`text-[11px] font-bold truncate ${file ? 'text-emerald-800' : 'text-slate-500 uppercase tracking-wider'}`}>
+                        {file ? file.name : 'Select File'}
+                    </p>
+                    {file && <p className="text-[9px] text-emerald-600 font-bold uppercase tracking-widest mt-0.5">Ready for Sync</p>}
+                </div>
+            </label>
+        </div>
+    );
 }
 

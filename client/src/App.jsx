@@ -78,6 +78,23 @@ export default function App() {
 
     // Tracking for extraction resume
     const [processedPages, setProcessedPages] = useState({});
+    
+    // Memoized Blob URLs for PDFs (Massively speeds up native preview)
+    const [fileBlobUrls, setFileBlobUrls] = useState({});
+
+    // Generate stable Blob URLs for the uploaded PDFs to prevent memory leaks and iframe reloads
+    useEffect(() => {
+        const newUrls = {};
+        consentFiles.forEach(f => {
+            newUrls[f.name] = window.URL.createObjectURL(f);
+        });
+        setFileBlobUrls(newUrls);
+
+        // Cleanup blobs when files change or component unmounts
+        return () => {
+            Object.values(newUrls).forEach(url => window.URL.revokeObjectURL(url));
+        };
+    }, [consentFiles]);
 
     // Timers
     useEffect(() => {
@@ -170,10 +187,11 @@ export default function App() {
                 const file = consentFiles.find(f => f.name === selected._file_name);
                 if (!file) return;
 
-                // Create a local blob URL for the entire PDF instantly
-                const fileUrl = window.URL.createObjectURL(file);
+                // Grab the stable, memoized Blob URL for the entire PDF
+                const fileUrl = fileBlobUrls[selected._file_name];
+                if (!fileUrl) return;
 
-                // Use browser-native fragment identifiers to jump to exact page and hide toolbars
+                // Use browser-native fragment identifiers to jump to exact page
                 const targetPage = selected._page_num + 1; // Backend is 0-indexed, URL fragments are 1-indexed
                 setPreviewUrl(`${fileUrl}#page=${targetPage}&toolbar=0&navpanes=0&scrollbar=0&view=FitH`);
 
@@ -847,7 +865,7 @@ export default function App() {
                                             ) : previewUrl ? (
                                                 <>
                                                     <iframe
-                                                        key={selectedId}
+                                                        key={results.find(r => r._id === selectedId)?._file_name || 'default'}
                                                         src={previewUrl}
                                                         title="Source Evidence"
                                                         className="w-full h-full border-0 pointer-events-none"

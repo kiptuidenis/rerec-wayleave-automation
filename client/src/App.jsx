@@ -795,7 +795,7 @@ export default function App() {
                                         <div className="flex items-center justify-between mb-4">
                                             <h4 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Document Evidence</h4>
                                             <div className="flex items-center space-x-2">
-                                                {previewUrl && (
+                                                {previewFile && (
                                                     <button
                                                         onClick={() => { setIsLightboxOpen(true); setLightboxZoom(1); }}
                                                         className="flex items-center space-x-1.5 bg-brand-primary hover:bg-blue-800 text-white px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all shadow-sm"
@@ -866,7 +866,7 @@ export default function App() {
 
                         {/* LIGHTBOX MODAL */}
                         <AnimatePresence>
-                            {isLightboxOpen && previewUrl && (
+                            {isLightboxOpen && previewFile && (
                                 <motion.div
                                     key="lightbox"
                                     initial={{ opacity: 0 }}

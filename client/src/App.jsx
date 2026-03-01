@@ -954,6 +954,7 @@ export default function App() {
                                 sitePlanFile={sitePlanFile}
                                 onBack={() => {
                                     setStep(2);
+                                    setIsFinalizing(false);
                                 }}
                                 onResolve={(pins) => {
                                     // Apply pins to the results state

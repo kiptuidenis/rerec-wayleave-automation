@@ -4,14 +4,13 @@ import { motion } from 'framer-motion';
 
 const API_BASE = "http://localhost:8000";
 
-const MapPinningView = ({ missingPins, sitePlanFile, isFinalizing, progress, statusMsg, finalizeTimeElapsed, onResolve, onBack }) => {
+const MapPinningView = ({ missingPins, sitePlanFile, onResolve, onBack }) => {
     const [pageUrls, setPageUrls] = useState([]);
     const [isLoadingImage, setIsLoadingImage] = useState(true);
     const [errorMsg, setErrorMsg] = useState(null);
     const [activeRecordId, setActiveRecordId] = useState(missingPins.length > 0 ? missingPins[0]._id : null);
     const [pins, setPins] = useState({}); // { _id: { _manual_x: float, _manual_y: float, _manual_page: int } }
     const [scale, setScale] = useState(1);
-    const [showConfirmModal, setShowConfirmModal] = useState(false);
 
     // Multi-page Support
     const [totalPages, setTotalPages] = useState(0);
@@ -223,51 +222,16 @@ const MapPinningView = ({ missingPins, sitePlanFile, isFinalizing, progress, sta
     };
 
     const handleComplete = () => {
-        // Collect all pins that haven't been resolved yet
-        const newPins = { ...pins };
-        let newlyFlagged = 0;
-
-        missingPins.forEach(p => {
-            if (!newPins[p._id]) {
-                newPins[p._id] = { _not_on_map: true };
-                newlyFlagged++;
-            }
-        });
-
-        if (newlyFlagged > 0) {
-            setPins(newPins);
-        }
-
-        const notOnMapRecords = missingPins.filter(p => newPins[p._id] && newPins[p._id]._not_on_map);
-        if (notOnMapRecords.length > 0) {
-            setShowConfirmModal(true);
-        } else {
-            onResolve(newPins);
-        }
+        onResolve(pins);
     };
 
-    const handleClearPin = (e, id) => {
+    const handleClearPin = (e, recordId) => {
         e.stopPropagation();
         setPins(prev => {
             const newPins = { ...prev };
-            delete newPins[id];
+            delete newPins[recordId];
             return newPins;
         });
-    };
-
-    const handleMarkNotOnMap = (e, id) => {
-        e.stopPropagation();
-        setPins(prev => ({ ...prev, [id]: { _not_on_map: true } }));
-        // Auto advance
-        const unmapped = missingPins.filter(p => !pins[p._id] && p._id !== id);
-        if (unmapped.length > 0) setActiveRecordId(unmapped[0]._id);
-    };
-
-    const formatTimer = (seconds) => {
-        if (!seconds) return "00:00";
-        const mins = Math.floor(seconds / 60);
-        const secs = seconds % 60;
-        return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
     };
 
     const handleSearch = async (e) => {
@@ -416,33 +380,10 @@ const MapPinningView = ({ missingPins, sitePlanFile, isFinalizing, progress, sta
                 <div className="flex justify-end space-x-3">
                     <button
                         onClick={handleComplete}
-                        disabled={isFinalizing}
-                        className="bg-emerald-500 hover:bg-emerald-600 text-slate-900 border border-emerald-400 px-6 py-2.5 rounded-lg font-bold uppercase tracking-wider text-[11px] flex items-center shadow-lg transition-all min-w-[200px] justify-center relative overflow-hidden"
+                        className="bg-emerald-500 hover:bg-emerald-600 text-slate-900 border border-emerald-400 px-6 py-2.5 rounded-lg font-bold uppercase tracking-wider text-[11px] flex items-center shadow-lg transition-all"
                     >
-                        {isFinalizing ? (
-                            <div className="w-full flex flex-col items-center">
-                                <div className="flex items-center space-x-2 mb-1">
-                                    <Loader2 className="animate-spin text-slate-900" size={12} />
-                                    <span className="text-[9px] truncate max-w-[140px] text-slate-900">{statusMsg}</span>
-                                </div>
-                                <div className="w-full h-1 bg-slate-900/20 rounded-full overflow-hidden mb-1">
-                                    <motion.div
-                                        className="h-full bg-slate-900"
-                                        initial={{ width: 0 }}
-                                        animate={{ width: `${progress}%` }}
-                                    />
-                                </div>
-                                <div className="flex justify-between w-full">
-                                    <span className="text-[8px] opacity-70 uppercase tracking-widest font-bold">Progress</span>
-                                    <span className="text-[8px] opacity-90 uppercase tracking-widest font-bold font-mono text-slate-800">{formatTimer(finalizeTimeElapsed)}</span>
-                                </div>
-                            </div>
-                        ) : (
-                            <>
-                                <CheckCircle size={16} className="mr-2" />
-                                Generate Package
-                            </>
-                        )}
+                        <CheckCircle size={16} className="mr-2" />
+                        Save & Generate Package
                     </button>
                 </div>
             </div>
@@ -462,8 +403,7 @@ const MapPinningView = ({ missingPins, sitePlanFile, isFinalizing, progress, sta
 
                     <div className="flex-1 p-3 space-y-2">
                         {missingPins.map((record) => {
-                            const isPinned = !!pins[record._id] && !pins[record._id]._not_on_map;
-                            const isNotOnMap = !!pins[record._id] && pins[record._id]._not_on_map;
+                            const isPinned = !!pins[record._id];
                             const isActive = activeRecordId === record._id;
                             const name = record["Signed by"] || record.proprietor_name || "Unknown";
                             const plotNum = record["Plot No"] || record.title_number;
@@ -472,12 +412,14 @@ const MapPinningView = ({ missingPins, sitePlanFile, isFinalizing, progress, sta
                             let statusText = "Needs Pin";
                             let statusColor = "text-amber-600 bg-amber-50 border-amber-200";
 
-                            if (isPinned) {
+                            const isNotOnMap = pins[record._id]?._not_on_map;
+
+                            if (isNotOnMap) {
+                                statusText = "Bypassed";
+                                statusColor = "text-slate-600 bg-slate-100 border-slate-300";
+                            } else if (isPinned) {
                                 statusText = "Pinned";
                                 statusColor = "text-emerald-700 bg-emerald-50 border-emerald-200";
-                            } else if (isNotOnMap) {
-                                statusText = "Not on Map";
-                                statusColor = "text-slate-600 bg-slate-100 border-slate-300";
                             }
 
                             if (isActive) {
@@ -488,7 +430,7 @@ const MapPinningView = ({ missingPins, sitePlanFile, isFinalizing, progress, sta
                                 <div
                                     key={record._id}
                                     onClick={() => setActiveRecordId(record._id)}
-                                    className={`p-4 rounded-xl border cursor-pointer transition-all shadow-sm ${bgColor} hover:shadow-md hover:-translate-y-0.5 relative`}
+                                    className={`p-4 rounded-xl border cursor-pointer transition-all shadow-sm ${bgColor} hover:shadow-md hover:-translate-y-0.5`}
                                 >
                                     <div className="flex justify-between items-start mb-2">
                                         <div className="flex-1 min-w-0 pr-3">
@@ -499,19 +441,31 @@ const MapPinningView = ({ missingPins, sitePlanFile, isFinalizing, progress, sta
                                             <div className={`text-[9px] font-bold uppercase px-2 py-1 rounded border overflow-hidden ${statusColor}`}>
                                                 {statusText}
                                             </div>
-                                            {!isPinned && !isNotOnMap ? (
+                                            {!isPinned && !isNotOnMap && (
                                                 <button
-                                                    onClick={(e) => handleMarkNotOnMap(e, record._id)}
-                                                    className="p-1 text-slate-400 hover:text-slate-700 hover:bg-slate-200 rounded transition-colors"
-                                                    title="Mark as Not on Map"
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        setPins(prev => ({
+                                                            ...prev,
+                                                            [record._id]: { _not_on_map: true }
+                                                        }));
+                                                        // Auto-advance to next missing pin
+                                                        const currentIndex = missingPins.findIndex(p => p._id === record._id);
+                                                        if (currentIndex !== -1 && currentIndex < missingPins.length - 1) {
+                                                            setActiveRecordId(missingPins[currentIndex + 1]._id);
+                                                        }
+                                                    }}
+                                                    className="p-1 text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded transition-colors ml-1"
+                                                    title="Mark as Not on Map (Bypass)"
                                                 >
                                                     <EyeOff size={14} />
                                                 </button>
-                                            ) : (
+                                            )}
+                                            {(isPinned || isNotOnMap) && (
                                                 <button
                                                     onClick={(e) => handleClearPin(e, record._id)}
-                                                    className="p-1 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors"
-                                                    title={isNotOnMap ? "Undo Not on Map" : "Clear Pin"}
+                                                    className="p-1 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors ml-1"
+                                                    title={isNotOnMap ? "Remove Bypass" : "Clear Pin"}
                                                 >
                                                     <X size={14} />
                                                 </button>

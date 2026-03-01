@@ -297,7 +297,7 @@ export default function App() {
                         } else if (event.type === 'progress') {
                             const percent = Math.round((event.current / event.total) * 100);
                             setProgress(percent);
-                            setStatusMsg(`Analyzing Page ${event.page} of ${event.total}...`);
+                            setStatusMsg(`Scanned ${event.current} of ${event.total} pages...`);
                         } else if (event.type === 'data') {
                             accumulatedResults.push(event.data);
                             // Track successful page for this file
@@ -655,21 +655,21 @@ export default function App() {
                                         >
                                             {loading ? (
                                                 <div className="w-full px-8 flex flex-col items-center">
-                                                    <div className="flex items-center space-x-3 mb-2">
-                                                        <Loader2 className="animate-spin" size={18} />
-                                                        <span className="text-sm">{statusMsg}</span>
+                                                    <div className="flex items-center space-x-3 mb-2 font-medium">
+                                                        <Loader2 className="animate-spin text-white" size={18} />
+                                                        <span className="text-sm text-white drop-shadow-sm">{statusMsg}</span>
                                                     </div>
-                                                    <div className="w-full h-1.5 bg-white/20 rounded-full overflow-hidden">
+                                                    <div className="w-full h-1.5 bg-white/30 rounded-full overflow-hidden shadow-inner">
                                                         <motion.div
-                                                            className="h-full bg-white"
+                                                            className="h-full bg-white shadow-sm"
                                                             initial={{ width: 0 }}
                                                             animate={{ width: `${progress}%` }}
                                                             transition={{ duration: 0.5 }}
                                                         />
                                                     </div>
-                                                    <div className="flex justify-between w-full mt-1">
-                                                        <span className="text-[10px] opacity-70 uppercase tracking-widest font-bold">{progress}% Complete</span>
-                                                        <span className="text-[10px] opacity-90 uppercase tracking-widest font-bold font-mono text-blue-100">{formatTimer(extractTimeElapsed)}</span>
+                                                    <div className="flex justify-between w-full mt-1.5">
+                                                        <span className="text-[10px] text-white/90 uppercase tracking-widest font-bold drop-shadow-sm">{progress}% Complete</span>
+                                                        <span className="text-[10px] text-white/90 uppercase tracking-widest font-bold font-mono drop-shadow-sm">{formatTimer(extractTimeElapsed)}</span>
                                                     </div>
                                                 </div>
                                             ) : (

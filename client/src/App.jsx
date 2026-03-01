@@ -671,7 +671,7 @@ export default function App() {
                                                     ) : (
                                                         <>
                                                             <Search size={20} />
-                                                            <span>Begin Cognitive Extraction</span>
+                                                            <span>Extract to Spreadsheet</span>
                                                         </>
                                                     )}
                                                 </div>

@@ -29,6 +29,7 @@ import axios from 'axios';
 import { HotTable } from '@handsontable/react';
 import { registerAllModules } from 'handsontable/registry';
 import 'handsontable/dist/handsontable.full.min.css';
+import MapPinningView from './components/MapPinningView';
 
 // register Handsontable's modules
 try {
@@ -66,6 +67,8 @@ export default function App() {
     const [skippedCount, setSkippedCount] = useState(0);
     const [lightboxZoom, setLightboxZoom] = useState(1);
 
+    // Step 2.5 State
+    const [missingPins, setMissingPins] = useState([]);
     const [extractTimeElapsed, setExtractTimeElapsed] = useState(0);
     const [finalizeTimeElapsed, setFinalizeTimeElapsed] = useState(0);
     const [totalPages, setTotalPages] = useState(0);
@@ -369,7 +372,7 @@ export default function App() {
         }
     };
 
-    const handleFinalize = async () => {
+    const handleFinalize = async (overrideResults = null) => {
         if (!sitePlanFile || !excelTemplate) {
             setError("Site Plan and Excel Template are required.");
             return;
@@ -381,9 +384,11 @@ export default function App() {
         setStatusMsg("Preparing package generation...");
         setFinalizeTimeElapsed(0);
 
+        const dataToSubmit = overrideResults || results;
+
         try {
             const formData = new FormData();
-            const jsonBlob = new Blob([JSON.stringify(results)], { type: 'application/json' });
+            const jsonBlob = new Blob([JSON.stringify(dataToSubmit)], { type: 'application/json' });
             formData.append('extraction_results_file', jsonBlob, 'results.json');
             formData.append('site_plan', sitePlanFile);
             formData.append('excel_template', excelTemplate);
@@ -419,6 +424,11 @@ export default function App() {
                             const percent = Math.round((event.current / event.total) * 100);
                             setProgress(percent);
                             setStatusMsg(event.message);
+                            setStep(3); // Linear Flow: Jump to Step 3 visually once stream progresses
+                        } else if (event.type === 'missing_pins') {
+                            setMissingPins(event.missing_rows);
+                            setStep(2.5);
+                            return; // Break out! Let user resolve coordinates
                         } else if (event.type === 'error') {
                             throw new Error(event.message);
                         } else if (event.type === 'complete') {
@@ -426,6 +436,7 @@ export default function App() {
                             setFinalDownloadUrl(downloadUrl);
                             setFinalFilename(event.filename);
                             setStep(3);
+                            setIsFinalizing(false);
                         }
                     } catch (e) {
                         console.error("Error parsing finalization stream line:", e);
@@ -435,8 +446,8 @@ export default function App() {
         } catch (err) {
             console.error("Finalization Error:", err);
             setError(err.message || "Finalization failed. Please check the server logs.");
-        } finally {
             setIsFinalizing(false);
+            setStep(2); // Kick back to step 2 if catastrophic error
         }
     };
 
@@ -722,27 +733,14 @@ export default function App() {
                                             )}
                                         </button>
                                         <button
-                                            onClick={handleFinalize}
+                                            onClick={() => handleFinalize()}
                                             disabled={isFinalizing}
-                                            className="bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-2.5 rounded-lg font-bold uppercase tracking-wider text-[11px] flex items-center justify-center min-w-[180px] shadow-sm transition-all relative overflow-hidden"
+                                            className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-6 py-2.5 rounded-lg font-bold uppercase tracking-wider text-[11px] flex items-center justify-center min-w-[180px] shadow-sm transition-all"
                                         >
                                             {isFinalizing ? (
-                                                <div className="w-full flex flex-col items-center">
-                                                    <div className="flex items-center space-x-2 mb-1">
-                                                        <Loader2 className="animate-spin" size={12} />
-                                                        <span className="text-[9px] truncate max-w-[140px]">{statusMsg}</span>
-                                                    </div>
-                                                    <div className="w-full h-1 bg-white/20 rounded-full overflow-hidden mb-1">
-                                                        <motion.div
-                                                            className="h-full bg-white"
-                                                            initial={{ width: 0 }}
-                                                            animate={{ width: `${progress}%` }}
-                                                        />
-                                                    </div>
-                                                    <div className="flex justify-between w-full">
-                                                        <span className="text-[8px] opacity-70 uppercase tracking-widest font-bold">Progress</span>
-                                                        <span className="text-[8px] opacity-90 uppercase tracking-widest font-bold font-mono text-emerald-100">{formatTimer(finalizeTimeElapsed)}</span>
-                                                    </div>
+                                                <div className="flex items-center space-x-2">
+                                                    <Loader2 className="animate-spin" size={16} />
+                                                    <span>Analyzing Coordinates...</span>
                                                 </div>
                                             ) : (
                                                 <div className="flex items-center space-x-2">
@@ -950,6 +948,29 @@ export default function App() {
                             )}
                         </AnimatePresence>
 
+                        {step === 2.5 && (
+                            <MapPinningView
+                                missingPins={missingPins}
+                                sitePlanFile={sitePlanFile}
+                                onBack={() => {
+                                    setStep(2);
+                                    setIsFinalizing(false);
+                                }}
+                                onResolve={(pins) => {
+                                    // Apply pins to the results state
+                                    const newResults = results.map(r => {
+                                        if (pins[r._id]) {
+                                            return { ...r, ...pins[r._id] };
+                                        }
+                                        return r;
+                                    });
+                                    setResults(newResults);
+                                    setStep(3); // Linear Flow: Jump instantly to the loading step visually
+                                    handleFinalize(newResults); // Go straight to generating step
+                                }}
+                            />
+                        )}
+
                         {step === 3 && (
                             <motion.div
                                 key="step3"
@@ -959,50 +980,77 @@ export default function App() {
                             >
                                 <div className="card-shell p-12 bg-white relative overflow-hidden">
                                     <div className="absolute top-0 left-0 w-full h-1.5 bg-brand-primary" />
-                                    <div className="bg-emerald-50 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-8 text-emerald-600 shadow-sm border border-emerald-100">
-                                        <CheckCircle size={40} />
-                                    </div>
-                                    <h2 className="text-3xl font-bold text-slate-900 mb-4 tracking-tight">Processing Complete</h2>
-                                    <p className="text-slate-500 mb-8 leading-relaxed font-medium">
-                                        Your wayleave automation package has been generated successfully. All metadata has been extracted, validated, and bundled into a final distribution archive.
-                                    </p>
 
-                                    <div className="grid grid-cols-2 gap-4 mb-10">
-                                        <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 shadow-sm text-center flex flex-col justify-center">
-                                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Total Processing Time</p>
-                                            <p className="text-2xl font-black text-slate-800 tracking-tight font-mono">{formatTimer(extractTimeElapsed + finalizeTimeElapsed)}</p>
-                                        </div>
-                                        <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 shadow-sm text-center flex flex-col justify-center">
-                                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Total Pages Processed</p>
-                                            <p className="text-2xl font-black text-slate-800 tracking-tight font-mono">{totalPages}</p>
-                                        </div>
-                                    </div>
+                                    {isFinalizing ? (
+                                        <div className="py-8">
+                                            <div className="bg-blue-50 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-8 text-blue-600 shadow-sm border border-blue-100">
+                                                <Loader2 size={40} className="animate-spin" />
+                                            </div>
+                                            <h2 className="text-2xl font-bold text-slate-900 mb-2 tracking-tight animate-pulse">Generating Distribution Package</h2>
+                                            <p className="text-slate-500 mb-10 leading-relaxed font-medium text-sm">
+                                                {statusMsg}
+                                            </p>
 
-                                    <div className="flex flex-col space-y-4">
-                                        {finalDownloadUrl && (
-                                            <button
-                                                onClick={() => {
-                                                    const link = document.createElement('a');
-                                                    link.href = finalDownloadUrl;
-                                                    link.setAttribute('download', finalFilename || 'Wayleave_Automation_Results.zip');
-                                                    document.body.appendChild(link);
-                                                    link.click();
-                                                    document.body.removeChild(link);
-                                                }}
-                                                className="w-full bg-slate-900 hover:bg-black text-white font-bold py-4 rounded-xl flex items-center justify-center space-x-3 transition-all shadow-md"
-                                            >
-                                                <Download size={20} />
-                                                <span>Download Package</span>
-                                            </button>
-                                        )}
-                                        <button
-                                            onClick={() => window.location.reload()}
-                                            className="w-full bg-brand-primary hover:bg-blue-800 text-white font-bold py-4 rounded-xl flex items-center justify-center space-x-3 transition-all shadow-md"
-                                        >
-                                            <Zap size={20} />
-                                            <span>Initialize New Project</span>
-                                        </button>
-                                    </div>
+                                            <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden mb-3">
+                                                <motion.div
+                                                    className="h-full bg-brand-primary"
+                                                    initial={{ width: 0 }}
+                                                    animate={{ width: `${progress}%` }}
+                                                />
+                                            </div>
+                                            <div className="flex justify-between w-full">
+                                                <span className="text-[10px] text-slate-400 uppercase tracking-widest font-bold">Progress: {progress}%</span>
+                                                <span className="text-[10px] text-slate-400 uppercase tracking-widest font-bold font-mono">Elapsed: {formatTimer(finalizeTimeElapsed)}</span>
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <>
+                                            <div className="bg-emerald-50 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-8 text-emerald-600 shadow-sm border border-emerald-100">
+                                                <CheckCircle size={40} />
+                                            </div>
+                                            <h2 className="text-3xl font-bold text-slate-900 mb-4 tracking-tight">Processing Complete</h2>
+                                            <p className="text-slate-500 mb-8 leading-relaxed font-medium">
+                                                Your wayleave automation package has been generated successfully. All metadata has been extracted, validated, and bundled into a final distribution archive.
+                                            </p>
+
+                                            <div className="grid grid-cols-2 gap-4 mb-10">
+                                                <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 shadow-sm text-center flex flex-col justify-center">
+                                                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Total Processing Time</p>
+                                                    <p className="text-2xl font-black text-slate-800 tracking-tight font-mono">{formatTimer(extractTimeElapsed + finalizeTimeElapsed)}</p>
+                                                </div>
+                                                <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 shadow-sm text-center flex flex-col justify-center">
+                                                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Total Pages Processed</p>
+                                                    <p className="text-2xl font-black text-slate-800 tracking-tight font-mono">{totalPages}</p>
+                                                </div>
+                                            </div>
+
+                                            <div className="flex flex-col space-y-4">
+                                                {finalDownloadUrl && (
+                                                    <button
+                                                        onClick={() => {
+                                                            const link = document.createElement('a');
+                                                            link.href = finalDownloadUrl;
+                                                            link.setAttribute('download', finalFilename || 'Wayleave_Automation_Results.zip');
+                                                            document.body.appendChild(link);
+                                                            link.click();
+                                                            document.body.removeChild(link);
+                                                        }}
+                                                        className="w-full bg-slate-900 hover:bg-black text-white font-bold py-4 rounded-xl flex items-center justify-center space-x-3 transition-all shadow-md"
+                                                    >
+                                                        <Download size={20} />
+                                                        <span>Download Package</span>
+                                                    </button>
+                                                )}
+                                                <button
+                                                    onClick={() => window.location.reload()}
+                                                    className="w-full bg-brand-primary hover:bg-blue-800 text-white font-bold py-4 rounded-xl flex items-center justify-center space-x-3 transition-all shadow-md"
+                                                >
+                                                    <Zap size={20} />
+                                                    <span>Initialize New Project</span>
+                                                </button>
+                                            </div>
+                                        </>
+                                    )}
                                 </div>
                             </motion.div>
                         )}

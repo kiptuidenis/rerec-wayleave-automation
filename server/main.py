@@ -30,6 +30,7 @@ app.add_middleware(
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Total-Pages"]
 )
 
 # Global registry for temporary downloads (used in local tool context)
@@ -217,6 +218,43 @@ async def finalize_project(
                 if f_name:
                     file_groups[f_name].append(row)
 
+            # --- PASS 1: PRE-FLIGHT LOCATION CHECK ---
+            yield json.dumps({"type": "status", "message": "Analyzing Site Plan Locations..."}) + "\n"
+            missing_pins = []
+            search_cache = {}
+            
+            for f_name, rows in file_groups.items():
+                for row in rows:
+                    name = row.get("Signed by") or row.get("proprietor_name")
+                    title_number = row.get("Plot No") or row.get("title_number")
+                    row_id = row.get("_id")
+                    
+                    _manual_x = row.get("_manual_x")
+                    _manual_y = row.get("_manual_y")
+                    _not_on_map = row.get("_not_on_map")
+                    
+                    if _not_on_map:
+                        continue # User explicitly bypassed this one, skip it!
+                    
+                    if _manual_x is not None and _manual_y is not None:
+                        continue # User manually pinned this one, it's good!
+                        
+                    if name and title_number:
+                        match = locator.search(name, title_number)
+                        if match:
+                            search_cache[row_id] = match
+                        else:
+                            missing_pins.append(row)
+                            
+            if missing_pins:
+                # Abort generation! Return control to React for Step 2.5 Interactive Review
+                yield json.dumps({
+                    "type": "missing_pins",
+                    "missing_rows": missing_pins
+                }) + "\n"
+                return
+
+            # --- PASS 2: ZIP PACKAGE GENERATION ---
             total_files = len(file_groups)
             processed_files = 0
             
@@ -236,14 +274,38 @@ async def finalize_project(
                     overlay_items = []
                     for row in rows:
                         name = row.get("Signed by") or row.get("proprietor_name")
-                        title = row.get("Plot No") or row.get("title_number")
+                        title_number = row.get("Plot No") or row.get("title_number")
                         box = row.get("sketch_box_1000")
                         p_num = row.get("_page_num")
+                        row_id = row.get("_id", id(row))
                         
-                        if name and box:
-                            match = locator.search(name, title)
+                        _not_on_map = row.get("_not_on_map")
+                        if _not_on_map:
+                            continue # Explicitly bypassed mapping
+                            
+                        _manual_x = row.get("_manual_x")
+                        _manual_y = row.get("_manual_y")
+                        
+                        if (name or _manual_x) and box:
+                            match = None
+                            
+                            if _manual_x is not None and _manual_y is not None:
+                                _manual_page = int(row.get("_manual_page", 0))
+                                page = locator.doc[_manual_page]
+                                pw, ph = page.rect.width, page.rect.height
+                                cx = pw * float(_manual_x)
+                                cy = ph * float(_manual_y)
+                                rect = fitz.Rect(cx-5, cy-5, cx+5, cy+5)
+                                match = {
+                                    "page": _manual_page,
+                                    "rect": rect,
+                                    "method": "manual_pin_drop"
+                                }
+                            else:
+                                match = search_cache.get(row_id)
+                                
                             if match:
-                                snip_path = os.path.join(temp_dir, f"snip_{row['_id']}.png")
+                                snip_path = os.path.join(temp_dir, f"snip_{row_id}.png")
                                 box_w = box[3] - box[1]
                                 box_h = box[2] - box[0]
                                 aspect_ratio = box_w / box_h if box_h != 0 else 1.0
@@ -378,6 +440,59 @@ async def get_preview(request: Request):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/search-site-plan")
+async def search_site_plan(request: Request):
+    try:
+        form = await request.form()
+        file = form.get("file")
+        query = form.get("query")
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"detail": f"Form parse error: {str(e)}"})
+    
+    if not file or not query:
+        return JSONResponse(status_code=400, content={"detail": "File and query are required"})
+        
+    try:
+        suffix = os.path.splitext(file.filename)[1]
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            shutil.copyfileobj(file.file, tmp)
+            tmp_path = tmp.name
+            
+        matches = []
+        try:
+            doc = fitz.open(tmp_path)
+            for page_num in range(len(doc)):
+                page = doc[page_num]
+                # fitz.search_for returns a list of fitz.Rect for each matched query
+                # Quads=False is default but good to be explicit for simple bounding boxes
+                found_rects = page.search_for(query, quads=False)
+                
+                # Get page dimensions to normalize relative coordinates
+                pw = page.rect.width
+                ph = page.rect.height
+                
+                if pw == 0 or ph == 0:
+                    continue
+                    
+                for rect in found_rects:
+                    matches.append({
+                        "page": page_num,
+                        "x": rect.x0 / pw,
+                        "y": rect.y0 / ph,
+                        "w": rect.width / pw,
+                        "h": rect.height / ph
+                    })
+            doc.close()
+            return JSONResponse(status_code=200, content={"matches": matches})
+        except Exception as e:
+            if 'doc' in locals(): doc.close()
+            raise HTTPException(status_code=500, detail=f"Search Error: {str(e)}")
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/analyze-site-plan")
 async def analyze_site_plan(request: Request):
     """
@@ -425,6 +540,58 @@ async def analyze_site_plan(request: Request):
                 except Exception: pass
     except Exception as e:
         return JSONResponse(status_code=500, content={"detail": str(e)})
+
+@app.post("/render-site-plan-hq")
+async def render_site_plan_hq(request: Request):
+    """
+    Renders a high-resolution PNG (150 DPI) of the site plan to display in the Step 2.5 Map Viewer.
+    """
+    try:
+        form = await request.form()
+        file = form.get("file")
+        page_num_str = form.get("page_num")
+        page_num = int(page_num_str) if page_num_str else 0
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"detail": f"Form parse error: {str(e)}"})
+    
+    if not file:
+        return JSONResponse(status_code=400, content={"detail": "No file provided"})
+        
+    try:
+        suffix = os.path.splitext(file.filename)[1]
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            shutil.copyfileobj(file.file, tmp)
+            tmp_path = tmp.name
+        
+        try:
+            doc = fitz.open(tmp_path)
+            if page_num < 0 or page_num >= len(doc):
+                doc.close()
+                raise HTTPException(status_code=400, detail=f"Page number {page_num} out of range (0-{len(doc)-1})")
+            
+            page = doc[page_num]
+            # 150 DPI provides high enough resolution for zooming without crashing the browser
+            pix = page.get_pixmap(dpi=150)
+            img_data = pix.tobytes("png")
+            total_pages = len(doc)
+            doc.close()
+            return Response(
+                content=img_data, 
+                media_type="image/png", 
+                headers={
+                    "Cache-Control": "public, max-age=3600",
+                    "X-Total-Pages": str(total_pages)
+                }
+            )
+        except Exception as e:
+            if 'doc' in locals() and hasattr(doc, 'close'): doc.close()
+            raise HTTPException(status_code=500, detail=f"HQ Render Error: {str(e)}")
+        finally:
+            if os.path.exists(tmp_path):
+                try: os.remove(tmp_path)
+                except Exception: pass
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn

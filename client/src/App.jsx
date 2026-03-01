@@ -69,7 +69,6 @@ export default function App() {
     const [selectedId, setSelectedId] = useState(null);
     const [isFinalizing, setIsFinalizing] = useState(false);
     const [isExportingExcel, setIsExportingExcel] = useState(false);
-    const [isExportingExcel, setIsExportingExcel] = useState(false);
     const [isLightboxOpen, setIsLightboxOpen] = useState(false);
     const [skippedCount, setSkippedCount] = useState(0);
     const [lightboxZoom, setLightboxZoom] = useState(1);
@@ -827,12 +826,12 @@ export default function App() {
                                                         }
                                                         className="flex items-center justify-center w-full h-full"
                                                     >
-                                                        <Page 
-                                                            pageNumber={previewPageNumber} 
-                                                            renderTextLayer={false} 
+                                                        <Page
+                                                            pageNumber={previewPageNumber}
+                                                            renderTextLayer={false}
                                                             renderAnnotationLayer={false}
                                                             className="shadow-sm"
-                                                            height={400} 
+                                                            height={400}
                                                         />
                                                     </Document>
                                                     <div className="absolute inset-0 bg-brand-primary/0 group-hover:bg-brand-primary/10 transition-all flex items-center justify-center">
@@ -906,9 +905,9 @@ export default function App() {
                                             boxShadow: '0 25px 60px rgba(0,0,0,0.5)',
                                         }} className="rounded-lg overflow-hidden bg-white">
                                             <Document file={previewFile}>
-                                                <Page 
-                                                    pageNumber={previewPageNumber} 
-                                                    renderTextLayer={false} 
+                                                <Page
+                                                    pageNumber={previewPageNumber}
+                                                    renderTextLayer={false}
                                                     renderAnnotationLayer={false}
                                                     width={window.innerWidth * 0.5}
                                                 />

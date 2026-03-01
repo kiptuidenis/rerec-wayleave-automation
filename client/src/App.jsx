@@ -30,6 +30,14 @@ import { HotTable } from '@handsontable/react';
 import { registerAllModules } from 'handsontable/registry';
 import 'handsontable/dist/handsontable.full.min.css';
 import MapPinningView from './components/MapPinningView';
+import { Document, Page, pdfjs } from 'react-pdf';
+import 'react-pdf/dist/esm/Page/AnnotationLayer.css';
+import 'react-pdf/dist/esm/Page/TextLayer.css';
+
+pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+    'pdfjs-dist/build/pdf.worker.min.mjs',
+    import.meta.url,
+).toString();
 
 // register Handsontable's modules
 try {
@@ -61,8 +69,7 @@ export default function App() {
     const [selectedId, setSelectedId] = useState(null);
     const [isFinalizing, setIsFinalizing] = useState(false);
     const [isExportingExcel, setIsExportingExcel] = useState(false);
-    const [previewUrl, setPreviewUrl] = useState(null);
-    const [isPreviewLoading, setIsPreviewLoading] = useState(false);
+    const [isExportingExcel, setIsExportingExcel] = useState(false);
     const [isLightboxOpen, setIsLightboxOpen] = useState(false);
     const [skippedCount, setSkippedCount] = useState(0);
     const [lightboxZoom, setLightboxZoom] = useState(1);
@@ -78,23 +85,6 @@ export default function App() {
 
     // Tracking for extraction resume
     const [processedPages, setProcessedPages] = useState({});
-    
-    // Memoized Blob URLs for PDFs (Massively speeds up native preview)
-    const [fileBlobUrls, setFileBlobUrls] = useState({});
-
-    // Generate stable Blob URLs for the uploaded PDFs to prevent memory leaks and iframe reloads
-    useEffect(() => {
-        const newUrls = {};
-        consentFiles.forEach(f => {
-            newUrls[f.name] = window.URL.createObjectURL(f);
-        });
-        setFileBlobUrls(newUrls);
-
-        // Cleanup blobs when files change or component unmounts
-        return () => {
-            Object.values(newUrls).forEach(url => window.URL.revokeObjectURL(url));
-        };
-    }, [consentFiles]);
 
     // Timers
     useEffect(() => {
@@ -175,41 +165,9 @@ export default function App() {
     }, [results]);
 
     // --- EFFECTS ---
-    useEffect(() => {
-        const abortController = new AbortController();
-
-        const fetchPreview = async () => {
-            const selected = results.find(r => r._id === selectedId);
-            if (!selected) return;
-
-            setIsPreviewLoading(true);
-            try {
-                const file = consentFiles.find(f => f.name === selected._file_name);
-                if (!file) return;
-
-                // Grab the stable, memoized Blob URL for the entire PDF
-                const fileUrl = fileBlobUrls[selected._file_name];
-                if (!fileUrl) return;
-
-                // Use browser-native fragment identifiers to jump to exact page
-                const targetPage = selected._page_num + 1; // Backend is 0-indexed, URL fragments are 1-indexed
-                setPreviewUrl(`${fileUrl}#page=${targetPage}&toolbar=0&navpanes=0&scrollbar=0&view=FitH`);
-
-            } catch (err) {
-                console.error("Native Preview failed", err);
-                setPreviewUrl(null);
-            } finally {
-                setIsPreviewLoading(false);
-            }
-        };
-
-        if (selectedId) fetchPreview();
-        else setPreviewUrl(null);
-
-        return () => {
-            abortController.abort();
-        };
-    }, [selectedId, results, consentFiles]);
+    const selectedResult = results.find(r => r._id === selectedId);
+    const previewFile = selectedResult ? consentFiles.find(f => f.name === selectedResult._file_name) : null;
+    const previewPageNumber = selectedResult ? selectedResult._page_num + 1 : 1;
 
     useEffect(() => {
         if (!sitePlanFile) {
@@ -848,28 +806,35 @@ export default function App() {
                                                     </button>
                                                 )}
                                                 <div className="bg-white px-3 py-1 rounded-md border border-slate-200 text-[9px] font-bold text-slate-600 shadow-sm">
-                                                    {previewUrl ? 'SYNCED' : 'AWAITING'}
+                                                    {previewFile ? 'SYNCED' : 'AWAITING'}
                                                 </div>
                                             </div>
                                         </div>
 
                                         <div
-                                            className={`flex-1 rounded-xl overflow-hidden border border-slate-200 bg-slate-200/50 flex items-center justify-center relative group shadow-inner ${previewUrl ? 'cursor-zoom-in' : ''}`}
-                                            onClick={() => previewUrl && (setIsLightboxOpen(true), setLightboxZoom(1))}
+                                            className={`flex-1 rounded-xl overflow-hidden border border-slate-200 bg-slate-200/50 flex items-center justify-center relative group shadow-inner ${previewFile ? 'cursor-zoom-in' : ''}`}
+                                            onClick={() => previewFile && (setIsLightboxOpen(true), setLightboxZoom(1))}
                                         >
-                                            {isPreviewLoading ? (
-                                                <div className="flex flex-col items-center space-y-4">
-                                                    <Loader2 size={32} className="text-brand-primary animate-spin" />
-                                                    <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Loading Evidence...</p>
-                                                </div>
-                                            ) : previewUrl ? (
+                                            {previewFile ? (
                                                 <>
-                                                    <iframe
-                                                        key={results.find(r => r._id === selectedId)?._file_name || 'default'}
-                                                        src={previewUrl}
-                                                        title="Source Evidence"
-                                                        className="w-full h-full border-0 pointer-events-none"
-                                                    />
+                                                    <Document
+                                                        file={previewFile}
+                                                        loading={
+                                                            <div className="flex flex-col items-center space-y-4">
+                                                                <Loader2 size={32} className="text-brand-primary animate-spin" />
+                                                                <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Parsing Protocol...</p>
+                                                            </div>
+                                                        }
+                                                        className="flex items-center justify-center w-full h-full"
+                                                    >
+                                                        <Page 
+                                                            pageNumber={previewPageNumber} 
+                                                            renderTextLayer={false} 
+                                                            renderAnnotationLayer={false}
+                                                            className="shadow-sm"
+                                                            height={400} 
+                                                        />
+                                                    </Document>
                                                     <div className="absolute inset-0 bg-brand-primary/0 group-hover:bg-brand-primary/10 transition-all flex items-center justify-center">
                                                         <div className="opacity-0 group-hover:opacity-100 transition-all bg-white/90 backdrop-blur-sm rounded-full px-4 py-2 flex items-center space-x-2 shadow-lg">
                                                             <Maximize2 size={14} className="text-brand-primary" />
@@ -927,7 +892,7 @@ export default function App() {
                                     </div>
 
                                     <motion.div
-                                        className="relative z-10 flex items-center justify-center w-full h-full p-20"
+                                        className="relative z-10 flex items-center justify-center w-full h-full p-20 overflow-auto"
                                         onClick={(e) => e.stopPropagation()}
                                         initial={{ scale: 0.92, opacity: 0 }}
                                         animate={{ scale: 1, opacity: 1 }}
@@ -936,20 +901,18 @@ export default function App() {
                                     >
                                         <div style={{
                                             transform: `scale(${lightboxZoom})`,
-                                            transformOrigin: 'center center',
+                                            transformOrigin: 'center top',
                                             transition: 'transform 0.2s ease',
-                                            width: '80%',
-                                            height: '90%',
-                                            borderRadius: '8px',
                                             boxShadow: '0 25px 60px rgba(0,0,0,0.5)',
-                                            overflow: 'hidden',
-                                            backgroundColor: 'white'
-                                        }}>
-                                            <iframe
-                                                src={previewUrl.replace('toolbar=0&navpanes=0&scrollbar=0', 'toolbar=0&navpanes=1&scrollbar=1')}
-                                                title="Fullscreen Document Review"
-                                                className="w-full h-full border-0"
-                                            />
+                                        }} className="rounded-lg overflow-hidden bg-white">
+                                            <Document file={previewFile}>
+                                                <Page 
+                                                    pageNumber={previewPageNumber} 
+                                                    renderTextLayer={false} 
+                                                    renderAnnotationLayer={false}
+                                                    width={window.innerWidth * 0.5}
+                                                />
+                                            </Document>
                                         </div>
                                     </motion.div>
 

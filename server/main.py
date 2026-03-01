@@ -401,7 +401,44 @@ async def download_file(file_id: str, background_tasks: BackgroundTasks):
         filename="Wayleave_Automation_Results.zip"
     )
 
-
+@app.post("/preview")
+async def get_preview(request: Request):
+    try:
+        form = await request.form()
+        file = form.get("file")
+        page_num_str = form.get("page_num")
+        page_num = int(page_num_str) if page_num_str else 0
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"detail": f"Form parse error: {str(e)}"})
+    
+    if not file:
+        return JSONResponse(status_code=400, content={"detail": "No file provided"})
+        
+    try:
+        suffix = os.path.splitext(file.filename)[1]
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            shutil.copyfileobj(file.file, tmp)
+            tmp_path = tmp.name
+        
+        try:
+            doc = fitz.open(tmp_path)
+            if page_num < 0 or page_num >= len(doc):
+                doc.close()
+                raise HTTPException(status_code=400, detail=f"Page number {page_num} out of range (0-{len(doc)-1})")
+            
+            page = doc[page_num]
+            pix = page.get_pixmap(dpi=150)
+            img_data = pix.tobytes("png")
+            doc.close()
+            return Response(content=img_data, media_type="image/png")
+        except Exception as e:
+            if 'doc' in locals(): doc.close()
+            raise HTTPException(status_code=500, detail=f"Preview Render Error: {str(e)}")
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/search-site-plan")
 async def search_site_plan(request: Request):

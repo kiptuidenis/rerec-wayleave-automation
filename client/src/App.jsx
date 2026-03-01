@@ -170,29 +170,18 @@ export default function App() {
                 const file = consentFiles.find(f => f.name === selected._file_name);
                 if (!file) return;
 
-                const formData = new FormData();
-                formData.append('file', file);
-                formData.append('page_num', selected._page_num);
+                // Create a local blob URL for the entire PDF instantly
+                const fileUrl = window.URL.createObjectURL(file);
 
-                const res = await axios.post(`${API_BASE}/preview`, formData, {
-                    responseType: 'blob',
-                    signal: abortController.signal
-                });
+                // Use browser-native fragment identifiers to jump to exact page and hide toolbars
+                const targetPage = selected._page_num + 1; // Backend is 0-indexed, URL fragments are 1-indexed
+                setPreviewUrl(`${fileUrl}#page=${targetPage}&toolbar=0&navpanes=0&scrollbar=0&view=FitH`);
 
-                if (previewUrl) window.URL.revokeObjectURL(previewUrl);
-                const url = window.URL.createObjectURL(new Blob([res.data]));
-                setPreviewUrl(url);
             } catch (err) {
-                if (axios.isCancel(err) || err.name === 'CanceledError' || (err.message && err.message.includes('canceled'))) {
-                    console.log('Preview fetch canceled because another row was selected.');
-                } else {
-                    console.error("Preview failed", err);
-                    setPreviewUrl(null);
-                }
+                console.error("Native Preview failed", err);
+                setPreviewUrl(null);
             } finally {
-                if (!abortController.signal.aborted) {
-                    setIsPreviewLoading(false);
-                }
+                setIsPreviewLoading(false);
             }
         };
 
@@ -857,13 +846,11 @@ export default function App() {
                                                 </div>
                                             ) : previewUrl ? (
                                                 <>
-                                                    <motion.img
+                                                    <iframe
                                                         key={selectedId}
-                                                        initial={{ opacity: 0 }}
-                                                        animate={{ opacity: 1 }}
                                                         src={previewUrl}
-                                                        alt="Source Evidence"
-                                                        className="w-full h-full object-contain"
+                                                        title="Source Evidence"
+                                                        className="w-full h-full border-0 pointer-events-none"
                                                     />
                                                     <div className="absolute inset-0 bg-brand-primary/0 group-hover:bg-brand-primary/10 transition-all flex items-center justify-center">
                                                         <div className="opacity-0 group-hover:opacity-100 transition-all bg-white/90 backdrop-blur-sm rounded-full px-4 py-2 flex items-center space-x-2 shadow-lg">
@@ -929,20 +916,23 @@ export default function App() {
                                         exit={{ scale: 0.95, opacity: 0 }}
                                         transition={{ duration: 0.18 }}
                                     >
-                                        <img
-                                            src={previewUrl}
-                                            alt="Document Fullscreen View"
-                                            style={{
-                                                transform: `scale(${lightboxZoom})`,
-                                                transformOrigin: 'center center',
-                                                transition: 'transform 0.2s ease',
-                                                maxWidth: '100%',
-                                                maxHeight: '100%',
-                                                objectFit: 'contain',
-                                                borderRadius: '8px',
-                                                boxShadow: '0 25px 60px rgba(0,0,0,0.5)',
-                                            }}
-                                        />
+                                        <div style={{
+                                            transform: `scale(${lightboxZoom})`,
+                                            transformOrigin: 'center center',
+                                            transition: 'transform 0.2s ease',
+                                            width: '80%',
+                                            height: '90%',
+                                            borderRadius: '8px',
+                                            boxShadow: '0 25px 60px rgba(0,0,0,0.5)',
+                                            overflow: 'hidden',
+                                            backgroundColor: 'white'
+                                        }}>
+                                            <iframe
+                                                src={previewUrl.replace('toolbar=0&navpanes=0&scrollbar=0', 'toolbar=0&navpanes=1&scrollbar=1')}
+                                                title="Fullscreen Document Review"
+                                                className="w-full h-full border-0"
+                                            />
+                                        </div>
                                     </motion.div>
 
                                     <div className="absolute bottom-6 left-1/2 -translate-x-1/2 text-[10px] font-bold text-white/40 uppercase tracking-widest">

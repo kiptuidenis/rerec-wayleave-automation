@@ -168,9 +168,10 @@ export default function App() {
 
         const handleWheel = (e) => {
             e.preventDefault(); // Stop page scrolling
-
-            const zoomSensitivity = 0.002;
-            const delta = -e.deltaY * zoomSensitivity;
+            
+            // Normalize deltaY to prevent massive jumps on varying hardware (mice vs trackpads)
+            const isTouchPad = Math.abs(e.deltaY) < 50; 
+            const delta = isTouchPad ? -e.deltaY * 0.01 : Math.sign(-e.deltaY) * 0.15;
 
             setPreviewZoom(prevZoom => {
                 const newScale = Math.max(0.2, Math.min(prevZoom * Math.exp(delta), 10));
@@ -887,7 +888,7 @@ export default function App() {
                                                         transformOrigin: '0 0',
                                                         width: '100%',
                                                         height: '100%',
-                                                        transition: isDraggingPreview ? 'none' : 'transform 0.05s linear' // Smooth out wheel, tight to cursor on drag
+                                                        transition: 'none' // React state drives the render; CSS transitions conflict via stuttering
                                                     }}
                                                 >
                                                     <Document

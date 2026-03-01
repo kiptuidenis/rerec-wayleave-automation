@@ -964,6 +964,7 @@ export default function App() {
                                         return r;
                                     });
                                     setResults(newResults);
+                                    setStep(3); // Linear Flow: Jump instantly to the loading step visually
                                     handleFinalize(newResults); // Go straight to generating step
                                 }}
                             />

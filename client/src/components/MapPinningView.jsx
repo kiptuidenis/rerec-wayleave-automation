@@ -222,6 +222,12 @@ const MapPinningView = ({ missingPins, sitePlanFile, onResolve, onBack }) => {
     };
 
     const handleComplete = () => {
+        // Validate if there are any un-resolved pins left
+        const unresolvedCount = missingPins.filter(p => !pins[p._id]).length;
+        if (unresolvedCount > 0) {
+            const proceed = window.confirm(`You still have ${unresolvedCount} missing records that are neither pinned nor marked as 'Not on Map'.\n\nIf you proceed, the package will be generated but these plots will not be annotated on the site plan.\n\nDo you want to proceed?`);
+            if (!proceed) return;
+        }
         onResolve(pins);
     };
 

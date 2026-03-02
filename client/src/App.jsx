@@ -30,14 +30,6 @@ import { HotTable } from '@handsontable/react';
 import { registerAllModules } from 'handsontable/registry';
 import 'handsontable/dist/handsontable.full.min.css';
 import MapPinningView from './components/MapPinningView';
-import { Document, Page, pdfjs } from 'react-pdf';
-import 'react-pdf/dist/Page/AnnotationLayer.css';
-import 'react-pdf/dist/Page/TextLayer.css';
-
-pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-    'pdfjs-dist/build/pdf.worker.min.mjs',
-    import.meta.url,
-).toString();
 
 // register Handsontable's modules
 try {
@@ -69,14 +61,12 @@ export default function App() {
     const [selectedId, setSelectedId] = useState(null);
     const [isFinalizing, setIsFinalizing] = useState(false);
     const [isExportingExcel, setIsExportingExcel] = useState(false);
+    const [previewUrl, setPreviewUrl] = useState(null);
+    const [isPreviewLoading, setIsPreviewLoading] = useState(false);
+    const [isLightboxOpen, setIsLightboxOpen] = useState(false);
+    const [isHoverPreviewOpen, setIsHoverPreviewOpen] = useState(false);
     const [skippedCount, setSkippedCount] = useState(0);
-
-    // Native PDF Mouse Controls
-    const [previewZoom, setPreviewZoom] = useState(1);
-    const [previewOffset, setPreviewOffset] = useState({ x: 0, y: 0 });
-    const [isDraggingPreview, setIsDraggingPreview] = useState(false);
-    const [previewDragStart, setPreviewDragStart] = useState({ x: 0, y: 0 });
-    const previewContainerRef = React.useRef(null);
+    const [lightboxZoom, setLightboxZoom] = useState(1);
 
     // Step 2.5 State
     const [missingPins, setMissingPins] = useState([]);
@@ -116,6 +106,13 @@ export default function App() {
         const s = totalSeconds % 60;
         return `${m}:${s.toString().padStart(2, '0')}`;
     };
+
+    // Close lightbox on Escape key
+    useEffect(() => {
+        const onKey = (e) => { if (e.key === 'Escape') { setIsLightboxOpen(false); setLightboxZoom(1); } };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, []);
 
     // Sync Results to HotData
     useEffect(() => {
@@ -161,83 +158,52 @@ export default function App() {
         }
     }, [results]);
 
-    // -- NATIVE PDF CONTROLS EFFECT --
-    useEffect(() => {
-        const container = previewContainerRef.current;
-        if (!container) return;
-
-        const handleWheel = (e) => {
-            e.preventDefault(); // Stop page scrolling
-            
-            // Normalize deltaY to prevent massive jumps on varying hardware (mice vs trackpads)
-            const isTouchPad = Math.abs(e.deltaY) < 50; 
-            const delta = isTouchPad ? -e.deltaY * 0.01 : Math.sign(-e.deltaY) * 0.15;
-
-            setPreviewZoom(prevZoom => {
-                const newScale = Math.max(0.2, Math.min(prevZoom * Math.exp(delta), 10));
-                if (newScale === prevZoom) return prevZoom;
-
-                setPreviewOffset(prevOffset => {
-                    const rect = container.getBoundingClientRect();
-                    const pointerX = e.clientX - rect.left;
-                    const pointerY = e.clientY - rect.top;
-
-                    const ratio = newScale / prevZoom;
-                    return {
-                        x: pointerX - (pointerX - prevOffset.x) * ratio,
-                        y: pointerY - (pointerY - prevOffset.y) * ratio
-                    };
-                });
-                return newScale;
-            });
-        };
-
-        container.addEventListener('wheel', handleWheel, { passive: false });
-        // Also prevent gesture events defaulting on Safari
-        const preventDefault = (e) => e.preventDefault();
-        container.addEventListener('gesturestart', preventDefault);
-        container.addEventListener('gesturechange', preventDefault);
-        return () => {
-            container.removeEventListener('wheel', handleWheel);
-            container.removeEventListener('gesturestart', preventDefault);
-            container.removeEventListener('gesturechange', preventDefault);
-        };
-    }, []);
-
-    const selectedResult = results.find(r => r._id === selectedId);
-    const previewFile = selectedResult ? consentFiles.find(f => f.name === selectedResult._file_name) : null;
-    const previewPageNumber = selectedResult ? selectedResult._page_num + 1 : 1;
-
-    // Reset zoom when selecting a new document
-    useEffect(() => {
-        setPreviewZoom(1);
-        setPreviewOffset({ x: 0, y: 0 });
-    }, [selectedId, previewFile]);
-
-    const handlePreviewPointerDown = (e) => {
-        if (!previewFile) return;
-        setIsDraggingPreview(true);
-        setPreviewDragStart({
-            x: e.clientX - previewOffset.x,
-            y: e.clientY - previewOffset.y
-        });
-        e.currentTarget.setPointerCapture(e.pointerId);
-    };
-
-    const handlePreviewPointerMove = (e) => {
-        if (!isDraggingPreview) return;
-        setPreviewOffset({
-            x: e.clientX - previewDragStart.x,
-            y: e.clientY - previewDragStart.y
-        });
-    };
-
-    const handlePreviewPointerUp = (e) => {
-        setIsDraggingPreview(false);
-        e.currentTarget.releasePointerCapture(e.pointerId);
-    };
-
     // --- EFFECTS ---
+    useEffect(() => {
+        const abortController = new AbortController();
+
+        const fetchPreview = async () => {
+            const selected = results.find(r => r._id === selectedId);
+            if (!selected) return;
+
+            setIsPreviewLoading(true);
+            try {
+                const file = consentFiles.find(f => f.name === selected._file_name);
+                if (!file) return;
+
+                const formData = new FormData();
+                formData.append('file', file);
+                formData.append('page_num', selected._page_num);
+
+                const res = await axios.post(`${API_BASE}/preview`, formData, {
+                    responseType: 'blob',
+                    signal: abortController.signal
+                });
+
+                if (previewUrl) window.URL.revokeObjectURL(previewUrl);
+                const url = window.URL.createObjectURL(new Blob([res.data]));
+                setPreviewUrl(url);
+            } catch (err) {
+                if (axios.isCancel(err) || err.name === 'CanceledError' || (err.message && err.message.includes('canceled'))) {
+                    console.log('Preview fetch canceled because another row was selected.');
+                } else {
+                    console.error("Preview failed", err);
+                    setPreviewUrl(null);
+                }
+            } finally {
+                if (!abortController.signal.aborted) {
+                    setIsPreviewLoading(false);
+                }
+            }
+        };
+
+        if (selectedId) fetchPreview();
+        else setPreviewUrl(null);
+
+        return () => {
+            abortController.abort();
+        };
+    }, [selectedId, results, consentFiles]);
 
     useEffect(() => {
         if (!sitePlanFile) {
@@ -862,74 +828,75 @@ export default function App() {
                                     </div>
 
                                     {/* Preview Panel */}
-                                    <div className="w-[450px] bg-slate-50 border-l border-slate-200 p-6 flex flex-col relative overflow-hidden">
+                                    <div className="w-[450px] bg-slate-50 border-l border-slate-200 p-6 flex flex-col relative z-20">
                                         <div className="flex items-center justify-between mb-4">
                                             <h4 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Document Evidence</h4>
                                             <div className="flex items-center space-x-2">
+                                                {previewUrl && (
+                                                    <button
+                                                        onClick={() => { setIsLightboxOpen(true); setLightboxZoom(1); }}
+                                                        className="flex items-center space-x-1.5 bg-brand-primary hover:bg-blue-800 text-white px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all shadow-sm"
+                                                    >
+                                                        <Maximize2 size={11} />
+                                                        <span>Full View</span>
+                                                    </button>
+                                                )}
                                                 <div className="bg-white px-3 py-1 rounded-md border border-slate-200 text-[9px] font-bold text-slate-600 shadow-sm">
-                                                    {previewFile ? 'SYNCED' : 'AWAITING'}
+                                                    {previewUrl ? 'SYNCED' : 'AWAITING'}
                                                 </div>
                                             </div>
                                         </div>
 
                                         <div
-                                            className={`flex-1 rounded-xl overflow-hidden border border-slate-200 bg-slate-800 flex items-center justify-center relative shadow-inner touch-none ${previewFile ? (isDraggingPreview ? 'cursor-grabbing' : 'cursor-grab') : ''}`}
-                                            ref={previewContainerRef}
-                                            onPointerDown={handlePreviewPointerDown}
-                                            onPointerMove={handlePreviewPointerMove}
-                                            onPointerUp={handlePreviewPointerUp}
-                                            onPointerCancel={handlePreviewPointerUp}
-                                            onPointerLeave={handlePreviewPointerUp}
+                                            className="flex-1 rounded-xl overflow-hidden border border-slate-200 bg-slate-200/50 flex items-center justify-center relative shadow-inner"
+                                            onMouseEnter={() => previewUrl && setIsHoverPreviewOpen(true)}
+                                            onMouseLeave={() => setIsHoverPreviewOpen(false)}
                                         >
-                                            {previewFile ? (
-                                                <div
-                                                    style={{
-                                                        transform: `translate(${previewOffset.x}px, ${previewOffset.y}px) scale(${previewZoom})`,
-                                                        transformOrigin: '0 0',
-                                                        width: '100%',
-                                                        height: '100%',
-                                                        transition: 'none' // React state drives the render; CSS transitions conflict via stuttering
-                                                    }}
-                                                >
-                                                    <Document
-                                                        file={previewFile}
-                                                        loading={
-                                                            <div className="flex flex-col items-center justify-center w-full h-full space-y-4">
-                                                                <Loader2 size={32} className="text-white animate-spin" />
-                                                                <p className="text-[10px] text-white/50 font-bold uppercase tracking-wider">Parsing Protocol...</p>
-                                                            </div>
-                                                        }
-                                                        className="flex items-center justify-center w-full h-full"
-                                                    >
-                                                        <Page
-                                                            pageNumber={previewPageNumber}
-                                                            renderTextLayer={false}
-                                                            renderAnnotationLayer={false}
-                                                            className="shadow-2xl"
-                                                            height={400}
-                                                        />
-                                                    </Document>
+                                            {isPreviewLoading ? (
+                                                <div className="flex flex-col items-center space-y-4">
+                                                    <Loader2 size={32} className="text-brand-primary animate-spin" />
+                                                    <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Loading Evidence...</p>
                                                 </div>
+                                            ) : previewUrl ? (
+                                                <motion.img
+                                                    key={selectedId}
+                                                    initial={{ opacity: 0 }}
+                                                    animate={{ opacity: 1 }}
+                                                    src={previewUrl}
+                                                    alt="Source Evidence"
+                                                    className="w-full h-full object-contain"
+                                                />
                                             ) : (
-                                                <div className="text-center p-8 z-10 pointer-events-none">
-                                                    <div className="bg-slate-700 w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4 border border-slate-600 shadow-sm">
-                                                        <ImageIcon size={32} className="text-slate-500" />
+                                                <div className="text-center p-8">
+                                                    <div className="bg-white/50 w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4 border border-slate-100">
+                                                        <ImageIcon size={32} className="text-slate-300" />
                                                     </div>
                                                     <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 max-w-[160px] mx-auto leading-relaxed">
                                                         Select a row to view the original document source
                                                     </p>
                                                 </div>
                                             )}
-
-                                            {/* Zoom Controls Overlay */}
-                                            {previewFile && (
-                                                <div className="absolute bottom-4 right-4 flex flex-col space-y-2 bg-white/10 backdrop-blur-md p-1 rounded-xl border border-white/20 shadow-lg z-20">
-                                                    <button onClick={(e) => { e.stopPropagation(); setPreviewZoom(z => Math.min(10, z + 0.25)); setPreviewOffset({ x: 0, y: 0 }) }} className="p-2 bg-white/10 hover:bg-white/20 text-white rounded-lg transition-colors" title="Zoom In"><ZoomIn size={16} /></button>
-                                                    <button onClick={(e) => { e.stopPropagation(); setPreviewZoom(1); setPreviewOffset({ x: 0, y: 0 }); }} className="p-1 px-0 bg-white/10 hover:bg-white/20 text-white rounded-lg transition-colors flex items-center justify-center text-[9px] font-bold font-mono" title="Reset Zoom">{Math.round(previewZoom * 100)}%</button>
-                                                    <button onClick={(e) => { e.stopPropagation(); setPreviewZoom(z => Math.max(0.2, z - 0.25)); setPreviewOffset({ x: 0, y: 0 }) }} className="p-2 bg-white/10 hover:bg-white/20 text-white rounded-lg transition-colors" title="Zoom Out"><ZoomOut size={16} /></button>
-                                                </div>
-                                            )}
                                         </div>
+
+                                        {/* Floating Hover Preview */}
+                                        <AnimatePresence>
+                                            {isHoverPreviewOpen && previewUrl && (
+                                                <motion.div
+                                                    initial={{ opacity: 0, scale: 0.95, x: 20 }}
+                                                    animate={{ opacity: 1, scale: 1, x: 0 }}
+                                                    exit={{ opacity: 0, scale: 0.95, x: 20 }}
+                                                    transition={{ duration: 0.15 }}
+                                                    // Position this absolute to the w-[450px] sidebar, spanning its height and spilling left 400px over the grid
+                                                    className="absolute -left-[350px] top-6 bottom-6 right-6 bg-white rounded-2xl shadow-[0_30px_60px_-15px_rgba(0,0,0,0.3)] border border-slate-200 z-[100] p-4 pointer-events-none flex items-center justify-center"
+                                                >
+                                                    <img
+                                                        src={previewUrl}
+                                                        alt="Enlarged Preview"
+                                                        className="w-full h-full object-contain rounded-xl drop-shadow-sm"
+                                                    />
+                                                </motion.div>
+                                            )}
+                                        </AnimatePresence>
 
                                         <div className="mt-4 p-4 bg-white rounded-lg border border-slate-200 shadow-sm">
                                             <p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest mb-1">Source File</p>
@@ -941,6 +908,63 @@ export default function App() {
                                 </div>
                             </motion.div>
                         )}
+
+                        {/* LIGHTBOX MODAL */}
+                        <AnimatePresence>
+                            {isLightboxOpen && previewUrl && (
+                                <motion.div
+                                    key="lightbox"
+                                    initial={{ opacity: 0 }}
+                                    animate={{ opacity: 1 }}
+                                    exit={{ opacity: 0 }}
+                                    transition={{ duration: 0.18 }}
+                                    className="fixed inset-0 z-[9999] flex items-center justify-center"
+                                    onClick={() => { setIsLightboxOpen(false); setLightboxZoom(1); }}
+                                >
+                                    <div className="absolute inset-0 bg-slate-900/85 backdrop-blur-md" />
+
+                                    <div className="absolute top-6 left-1/2 -translate-x-1/2 z-10 flex items-center space-x-3 bg-white/10 backdrop-blur-sm border border-white/20 rounded-2xl px-4 py-2 shadow-2xl">
+                                        <span className="text-[10px] font-bold text-white/70 uppercase tracking-widest truncate max-w-[200px]">
+                                            {results.find(r => r._id === selectedId)?._file_name || 'Document'}
+                                        </span>
+                                        <div className="w-px h-4 bg-white/20" />
+                                        <button onClick={(e) => { e.stopPropagation(); setLightboxZoom(z => Math.max(0.5, z - 0.25)); }} className="text-white/80 hover:text-white p-1.5 rounded-lg hover:bg-white/10 transition-all"><ZoomOut size={16} /></button>
+                                        <span className="text-[11px] font-bold text-white min-w-[40px] text-center">{Math.round(lightboxZoom * 100)}%</span>
+                                        <button onClick={(e) => { e.stopPropagation(); setLightboxZoom(z => Math.min(4, z + 0.25)); }} className="text-white/80 hover:text-white p-1.5 rounded-lg hover:bg-white/10 transition-all"><ZoomIn size={16} /></button>
+                                        <div className="w-px h-4 bg-white/20" />
+                                        <button onClick={(e) => { e.stopPropagation(); setIsLightboxOpen(false); setLightboxZoom(1); }} className="text-white/80 hover:text-white p-1.5 rounded-lg hover:bg-white/10 transition-all"><X size={16} /></button>
+                                    </div>
+
+                                    <motion.div
+                                        className="relative z-10 flex items-center justify-center w-full h-full p-20"
+                                        onClick={(e) => e.stopPropagation()}
+                                        initial={{ scale: 0.92, opacity: 0 }}
+                                        animate={{ scale: 1, opacity: 1 }}
+                                        exit={{ scale: 0.95, opacity: 0 }}
+                                        transition={{ duration: 0.18 }}
+                                    >
+                                        <img
+                                            src={previewUrl}
+                                            alt="Document Fullscreen View"
+                                            style={{
+                                                transform: `scale(${lightboxZoom})`,
+                                                transformOrigin: 'center center',
+                                                transition: 'transform 0.2s ease',
+                                                maxWidth: '100%',
+                                                maxHeight: '100%',
+                                                objectFit: 'contain',
+                                                borderRadius: '8px',
+                                                boxShadow: '0 25px 60px rgba(0,0,0,0.5)',
+                                            }}
+                                        />
+                                    </motion.div>
+
+                                    <div className="absolute bottom-6 left-1/2 -translate-x-1/2 text-[10px] font-bold text-white/40 uppercase tracking-widest">
+                                        Press Esc or click backdrop to close
+                                    </div>
+                                </motion.div>
+                            )}
+                        </AnimatePresence>
 
                         {step === 2.5 && (
                             <MapPinningView

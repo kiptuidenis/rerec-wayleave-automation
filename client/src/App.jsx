@@ -878,21 +878,21 @@ export default function App() {
                                             )}
                                         </div>
 
-                                        {/* Floating Hover Preview */}
                                         <AnimatePresence>
                                             {isHoverPreviewOpen && previewUrl && (
                                                 <motion.div
-                                                    initial={{ opacity: 0, scale: 0.95, x: 20 }}
-                                                    animate={{ opacity: 1, scale: 1, x: 0 }}
-                                                    exit={{ opacity: 0, scale: 0.95, x: 20 }}
-                                                    transition={{ duration: 0.15 }}
-                                                    // Position this absolute to the w-[450px] sidebar, spanning its height and spilling left over the grid
-                                                    className="absolute right-[calc(100%+24px)] top-6 bottom-6 w-[450px] bg-white rounded-2xl shadow-[0_30px_60px_-15px_rgba(0,0,0,0.3)] border border-slate-200 z-[100] p-4 pointer-events-none flex items-center justify-center"
+                                                    initial={{ opacity: 0, scale: 0.9 }}
+                                                    animate={{ opacity: 1, scale: 1 }}
+                                                    exit={{ opacity: 0, scale: 0.9 }}
+                                                    transition={{ type: "spring", damping: 25, stiffness: 300 }}
+                                                    // This box sits right over the original but is slightly larger due to negative margins
+                                                    // It stays on the right because it's absolute to the sidebar
+                                                    className="absolute -inset-10 bg-white rounded-2xl shadow-[0_40px_80px_-15px_rgba(0,0,0,0.5)] border border-slate-200 z-[100] p-4 pointer-events-none flex items-center justify-center"
                                                 >
                                                     <img
                                                         src={previewUrl}
-                                                        alt="Enlarged Preview"
-                                                        className="w-full h-full object-contain rounded-xl drop-shadow-sm"
+                                                        alt="Hover Zoom Evidence"
+                                                        className="w-full h-full object-contain rounded-xl"
                                                     />
                                                 </motion.div>
                                             )}

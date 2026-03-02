@@ -886,13 +886,13 @@ export default function App() {
                                                     animate={{ opacity: 1, scale: 1, x: 0 }}
                                                     exit={{ opacity: 0, scale: 0.95, x: 20 }}
                                                     transition={{ duration: 0.15 }}
-                                                    // Position this absolute to the w-[450px] sidebar, spanning its height and spilling left 400px over the grid
-                                                    className="absolute right-[calc(100%+24px)] top-6 bottom-6 w-auto bg-white rounded-2xl shadow-[0_30px_60px_-15px_rgba(0,0,0,0.3)] border border-slate-200 z-[100] p-4 pointer-events-none flex items-center justify-center"
+                                                    // Position this absolute to the w-[450px] sidebar, spanning its height and spilling left over the grid
+                                                    className="absolute right-[calc(100%+24px)] top-6 bottom-6 w-[450px] bg-white rounded-2xl shadow-[0_30px_60px_-15px_rgba(0,0,0,0.3)] border border-slate-200 z-[100] p-4 pointer-events-none flex items-center justify-center"
                                                 >
                                                     <img
                                                         src={previewUrl}
                                                         alt="Enlarged Preview"
-                                                        className="h-full w-auto object-contain rounded-xl drop-shadow-sm"
+                                                        className="w-full h-full object-contain rounded-xl drop-shadow-sm"
                                                     />
                                                 </motion.div>
                                             )}

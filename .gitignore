@@ -2,7 +2,7 @@
 __pycache__/
 *.py[cod]
 *$py.class
-venv/
+.venv/
 .env
 
 # Project specific
@@ -14,3 +14,4 @@ manual_review_required.txt
 # OS
 .DS_Store
 Thumbs.db
+.tmp

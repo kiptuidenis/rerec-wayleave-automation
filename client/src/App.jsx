@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
     Upload,
@@ -64,6 +64,8 @@ export default function App() {
     const [previewUrl, setPreviewUrl] = useState(null);
     const [isPreviewLoading, setIsPreviewLoading] = useState(false);
     const [isLightboxOpen, setIsLightboxOpen] = useState(false);
+    const [isHoverPreviewOpen, setIsHoverPreviewOpen] = useState(false);
+    const [hoverZoom, setHoverZoom] = useState(1);
     const [skippedCount, setSkippedCount] = useState(0);
     const [lightboxZoom, setLightboxZoom] = useState(1);
 
@@ -76,7 +78,8 @@ export default function App() {
     const [finalDownloadUrl, setFinalDownloadUrl] = useState(null);
     const [finalFilename, setFinalFilename] = useState("");
 
-    // Tracking for extraction resume
+    // Hosting the preview zoom logic in a ref to handle non-passive wheel events
+    const previewRef = useRef(null);
     const [processedPages, setProcessedPages] = useState({});
 
     // Timers
@@ -106,9 +109,35 @@ export default function App() {
         return `${m}:${s.toString().padStart(2, '0')}`;
     };
 
+    // Handle mouse wheel zoom with passive: false to prevent page scroll
+    useEffect(() => {
+        const el = previewRef.current;
+        if (!el) return;
+
+        const handleWheel = (e) => {
+            if (isHoverPreviewOpen) {
+                // This is the critical part to stop page scrolling
+                e.preventDefault();
+                setHoverZoom(prev => {
+                    const delta = e.deltaY > 0 ? -0.2 : 0.2;
+                    return Math.min(Math.max(1, prev + delta), 4);
+                });
+            }
+        };
+
+        el.addEventListener('wheel', handleWheel, { passive: false });
+        return () => el.removeEventListener('wheel', handleWheel);
+    }, [isHoverPreviewOpen]);
+
     // Close lightbox on Escape key
     useEffect(() => {
-        const onKey = (e) => { if (e.key === 'Escape') { setIsLightboxOpen(false); setLightboxZoom(1); } };
+        const onKey = (e) => {
+            if (e.key === 'Escape') {
+                setIsLightboxOpen(false);
+                setLightboxZoom(1);
+                setIsHoverPreviewOpen(false);
+            }
+        };
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
     }, []);
@@ -128,6 +157,7 @@ export default function App() {
                 r["Consent Signed"] || 'YES',
                 r["Relationship"] || '',
                 r["Phone No"] || '',
+                r["Ownership Document"] || 'UNDER ADJUDICATION',
                 r._id // Hidden ID for selection tracking
             ]);
 
@@ -141,8 +171,8 @@ export default function App() {
                 // Check if any value changed externally
                 let changed = false;
                 for (let i = 0; i < data.length; i++) {
-                    // Ignore the _id at the end (index 10)
-                    for (let j = 0; j < 10; j++) {
+                    // Ignore the _id at the end (index 11)
+                    for (let j = 0; j < 11; j++) {
                         if (data[i][j] !== prev[i][j]) {
                             changed = true;
                             break;
@@ -297,7 +327,7 @@ export default function App() {
                         } else if (event.type === 'progress') {
                             const percent = Math.round((event.current / event.total) * 100);
                             setProgress(percent);
-                            setStatusMsg(`Analyzing Page ${event.page} of ${event.total}...`);
+                            setStatusMsg(`Scanned ${event.current} of ${event.total} pages...`);
                         } else if (event.type === 'data') {
                             accumulatedResults.push(event.data);
                             // Track successful page for this file
@@ -476,7 +506,8 @@ export default function App() {
                     "ID No",
                     "Consent Signed",
                     "Relationship",
-                    "Phone No"
+                    "Phone No",
+                    "Ownership Document"
                 ];
 
                 // Handsontable can give 'prop' as a string or number depending on config
@@ -526,18 +557,11 @@ export default function App() {
                 <nav className="bg-white border-b border-slate-200 sticky top-0 z-50">
                     <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
                         <div className="flex items-center space-x-3">
-                            <div className="bg-brand-primary p-1.5 rounded-lg shadow-sm">
+                            <div className="bg-brand-primary p-2 rounded-xl shadow-md">
                                 <ShieldCheck className="text-white" size={24} />
                             </div>
                             <div>
                                 <h1 className="text-lg font-bold tracking-tight text-slate-900">Wayleave<span className="text-brand-secondary">Automation</span></h1>
-                                <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider -mt-1">Corporate Infrastructure</p>
-                            </div>
-                        </div>
-                        <div className="flex items-center space-x-4">
-                            <div className="flex items-center space-x-2 bg-slate-100 px-3 py-1.5 rounded-full border border-slate-200">
-                                <div className="w-2 h-2 rounded-full bg-blue-500" />
-                                <span className="text-[10px] font-bold text-slate-600 uppercase tracking-widest">Server Online</span>
                             </div>
                         </div>
                     </div>
@@ -616,17 +640,28 @@ export default function App() {
                                             <p className="text-sm text-slate-500 mt-1">Select scanned consent forms for processing and metadata extraction.</p>
                                         </div>
 
-                                        <label className="flex-1 flex flex-col items-center justify-center border-2 border-dashed border-slate-200 rounded-2xl p-12 hover:bg-slate-50 hover:border-brand-primary/40 transition-all cursor-pointer group mb-6 bg-slate-50/50">
-                                            <input type="file" multiple className="hidden" onChange={(e) => {
-                                                setConsentFiles(Array.from(e.target.files));
-                                                setProcessedPages({}); // Reset resume state when files change
-                                            }} />
-                                            <div className="bg-white p-4 rounded-full shadow-sm border border-slate-200 group-hover:scale-110 transition-transform duration-300 mb-4">
-                                                <Upload className="text-slate-400 group-hover:text-brand-primary" size={32} />
-                                            </div>
-                                            <p className="text-slate-900 font-bold text-lg">Click to Upload Documents</p>
-                                            <p className="text-slate-400 text-xs mt-2 uppercase tracking-widest font-bold">Standard PDF Format Only</p>
-                                        </label>
+                                        {consentFiles.length === 0 ? (
+                                            <label className="flex-1 flex flex-col items-center justify-center border-2 border-dashed border-slate-200 rounded-2xl p-12 hover:bg-slate-50 hover:border-brand-primary/40 transition-all cursor-pointer group mb-6 bg-slate-50/50">
+                                                <input type="file" multiple className="hidden" onChange={(e) => {
+                                                    setConsentFiles(Array.from(e.target.files));
+                                                    setProcessedPages({}); // Reset resume state when files change
+                                                }} />
+                                                <div className="bg-white p-4 rounded-full shadow-sm border border-slate-200 group-hover:scale-110 transition-transform duration-300 mb-4">
+                                                    <Upload className="text-slate-400 group-hover:text-brand-primary" size={32} />
+                                                </div>
+                                                <p className="text-slate-900 font-bold text-lg">Click to Upload Documents</p>
+                                                <p className="text-slate-400 text-xs mt-2 uppercase tracking-widest font-bold">Standard PDF Format Only</p>
+                                            </label>
+                                        ) : (
+                                            <label className="flex flex-row items-center justify-center space-x-2 border-2 border-dashed border-slate-200 rounded-xl py-3 hover:bg-slate-50 hover:border-brand-primary/40 transition-all cursor-pointer group mb-6 bg-slate-50/50">
+                                                <input type="file" multiple className="hidden" onChange={(e) => {
+                                                    setConsentFiles(Array.from(e.target.files));
+                                                    setProcessedPages({});
+                                                }} />
+                                                <Upload className="text-slate-400 group-hover:text-brand-primary transition-colors" size={16} />
+                                                <p className="text-slate-600 font-semibold text-sm group-hover:text-brand-primary transition-colors">Select different documents</p>
+                                            </label>
+                                        )}
 
                                         {consentFiles.length > 0 && (
                                             <div className="bg-blue-50/50 rounded-xl p-4 border border-blue-100 mb-8 items-center flex justify-between">
@@ -647,25 +682,25 @@ export default function App() {
                                         <button
                                             onClick={handleExtract}
                                             disabled={loading || consentFiles.length === 0}
-                                            className="w-full bg-brand-primary hover:bg-blue-800 text-white font-bold py-4 rounded-xl flex flex-col items-center justify-center transition-all shadow-md active:transform active:scale-[0.99] disabled:opacity-40 overflow-hidden relative"
+                                            className="w-full bg-brand-accent hover:brightness-110 text-white font-bold py-4 rounded-xl flex flex-col items-center justify-center transition-all shadow-lg hover:shadow-xl active:transform active:scale-[0.99] disabled:opacity-40 overflow-hidden relative"
                                         >
                                             {loading ? (
                                                 <div className="w-full px-8 flex flex-col items-center">
-                                                    <div className="flex items-center space-x-3 mb-2">
-                                                        <Loader2 className="animate-spin" size={18} />
-                                                        <span className="text-sm">{statusMsg}</span>
+                                                    <div className="flex items-center space-x-3 mb-2 font-medium">
+                                                        <Loader2 className="animate-spin text-white" size={18} />
+                                                        <span className="text-sm text-white drop-shadow-sm">{statusMsg}</span>
                                                     </div>
-                                                    <div className="w-full h-1.5 bg-white/20 rounded-full overflow-hidden">
+                                                    <div className="w-full h-1.5 bg-white/30 rounded-full overflow-hidden shadow-inner">
                                                         <motion.div
-                                                            className="h-full bg-white"
+                                                            className="h-full bg-white shadow-sm"
                                                             initial={{ width: 0 }}
                                                             animate={{ width: `${progress}%` }}
                                                             transition={{ duration: 0.5 }}
                                                         />
                                                     </div>
-                                                    <div className="flex justify-between w-full mt-1">
-                                                        <span className="text-[10px] opacity-70 uppercase tracking-widest font-bold">{progress}% Complete</span>
-                                                        <span className="text-[10px] opacity-90 uppercase tracking-widest font-bold font-mono text-blue-100">{formatTimer(extractTimeElapsed)}</span>
+                                                    <div className="flex justify-between w-full mt-1.5">
+                                                        <span className="text-[10px] text-white/90 uppercase tracking-widest font-bold drop-shadow-sm">{progress}% Complete</span>
+                                                        <span className="text-[10px] text-white/90 uppercase tracking-widest font-bold font-mono drop-shadow-sm">{formatTimer(extractTimeElapsed)}</span>
                                                     </div>
                                                 </div>
                                             ) : (
@@ -678,7 +713,7 @@ export default function App() {
                                                     ) : (
                                                         <>
                                                             <Search size={20} />
-                                                            <span>Begin Cognitive Extraction</span>
+                                                            <span>Extract to Spreadsheet</span>
                                                         </>
                                                     )}
                                                 </div>
@@ -700,7 +735,7 @@ export default function App() {
                                 {/* Toolbar */}
                                 <div className="bg-slate-50 border-b border-slate-200 p-4 flex justify-between items-center px-8 z-30">
                                     <div className="flex items-center space-x-4">
-                                        <div className="p-2 bg-emerald-50 rounded-lg text-emerald-600">
+                                        <div className="p-2 bg-blue-50 rounded-lg text-blue-600">
                                             <LayoutDashboard size={20} />
                                         </div>
                                         <div>
@@ -735,7 +770,7 @@ export default function App() {
                                         <button
                                             onClick={() => handleFinalize()}
                                             disabled={isFinalizing}
-                                            className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-6 py-2.5 rounded-lg font-bold uppercase tracking-wider text-[11px] flex items-center justify-center min-w-[180px] shadow-sm transition-all"
+                                            className="bg-brand-primary hover:bg-slate-800 disabled:opacity-50 text-white px-6 py-2.5 rounded-lg font-bold uppercase tracking-wider text-[11px] flex items-center justify-center min-w-[180px] shadow-sm transition-all"
                                         >
                                             {isFinalizing ? (
                                                 <div className="flex items-center space-x-2">
@@ -778,16 +813,17 @@ export default function App() {
                                                     'Consent',
                                                     'Relationship',
                                                     'Phone',
+                                                    'Ownership Doc',
                                                     '_id'
                                                 ]}
                                                 columns={[
                                                     { type: 'text' }, { type: 'text' }, { type: 'text' }, { type: 'text' },
                                                     { type: 'text' }, { type: 'text' }, { type: 'text' }, { type: 'text' },
-                                                    { type: 'text' }, { type: 'text' },
-                                                    { type: 'text', readOnly: true, editor: false } // hidden column logic via css or just ignore it
+                                                    { type: 'text' }, { type: 'text' }, { type: 'text' },
+                                                    { type: 'text', readOnly: true, editor: false }
                                                 ]}
                                                 hiddenColumns={{
-                                                    columns: [10],
+                                                    columns: [11],
                                                     indicators: false
                                                 }}
                                                 height={Math.floor(window.innerHeight * 0.72)}
@@ -807,8 +843,8 @@ export default function App() {
                                                 afterSelectionEnd={function (row) {
                                                     // Get the exact data array for the row sitting at this visual index
                                                     const rowData = this.getSourceDataAtRow(this.toPhysicalRow(row));
-                                                    if (rowData && rowData[10]) { // Index 10 is the hidden _id
-                                                        setSelectedId(rowData[10]);
+                                                    if (rowData && rowData[11]) { // Index 11 is the hidden _id
+                                                        setSelectedId(rowData[11]);
                                                     }
                                                 }}
                                                 viewportRowRenderingOffset={10}
@@ -823,7 +859,7 @@ export default function App() {
                                     </div>
 
                                     {/* Preview Panel */}
-                                    <div className="w-[450px] bg-slate-50 border-l border-slate-200 p-6 flex flex-col relative overflow-hidden">
+                                    <div className="w-[450px] bg-slate-50 border-l border-slate-200 p-6 flex flex-col relative z-20">
                                         <div className="flex items-center justify-between mb-4">
                                             <h4 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Document Evidence</h4>
                                             <div className="flex items-center space-x-2">
@@ -843,8 +879,13 @@ export default function App() {
                                         </div>
 
                                         <div
-                                            className={`flex-1 rounded-xl overflow-hidden border border-slate-200 bg-slate-200/50 flex items-center justify-center relative group shadow-inner ${previewUrl ? 'cursor-zoom-in' : ''}`}
-                                            onClick={() => previewUrl && (setIsLightboxOpen(true), setLightboxZoom(1))}
+                                            ref={previewRef}
+                                            className="flex-1 rounded-xl overflow-hidden border border-slate-200 bg-slate-200/50 flex items-center justify-center relative shadow-inner"
+                                            onMouseEnter={() => previewUrl && setIsHoverPreviewOpen(true)}
+                                            onMouseLeave={() => {
+                                                setIsHoverPreviewOpen(false);
+                                                setHoverZoom(1);
+                                            }}
                                         >
                                             {isPreviewLoading ? (
                                                 <div className="flex flex-col items-center space-y-4">
@@ -852,22 +893,14 @@ export default function App() {
                                                     <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Loading Evidence...</p>
                                                 </div>
                                             ) : previewUrl ? (
-                                                <>
-                                                    <motion.img
-                                                        key={selectedId}
-                                                        initial={{ opacity: 0 }}
-                                                        animate={{ opacity: 1 }}
-                                                        src={previewUrl}
-                                                        alt="Source Evidence"
-                                                        className="w-full h-full object-contain"
-                                                    />
-                                                    <div className="absolute inset-0 bg-brand-primary/0 group-hover:bg-brand-primary/10 transition-all flex items-center justify-center">
-                                                        <div className="opacity-0 group-hover:opacity-100 transition-all bg-white/90 backdrop-blur-sm rounded-full px-4 py-2 flex items-center space-x-2 shadow-lg">
-                                                            <Maximize2 size={14} className="text-brand-primary" />
-                                                            <span className="text-[10px] font-bold text-slate-700 uppercase tracking-wider">Click to expand</span>
-                                                        </div>
-                                                    </div>
-                                                </>
+                                                <motion.img
+                                                    key={selectedId}
+                                                    initial={{ opacity: 0 }}
+                                                    animate={{ opacity: 1 }}
+                                                    src={previewUrl}
+                                                    alt="Source Evidence"
+                                                    className="w-full h-full object-contain"
+                                                />
                                             ) : (
                                                 <div className="text-center p-8">
                                                     <div className="bg-white/50 w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4 border border-slate-100">
@@ -879,6 +912,29 @@ export default function App() {
                                                 </div>
                                             )}
                                         </div>
+
+                                        <AnimatePresence>
+                                            {isHoverPreviewOpen && previewUrl && (
+                                                <motion.div
+                                                    initial={{ opacity: 0, scale: 0.9 }}
+                                                    animate={{ opacity: 1, scale: 1 }}
+                                                    exit={{ opacity: 0, scale: 0.9 }}
+                                                    transition={{ type: "spring", damping: 25, stiffness: 300 }}
+                                                    // This box sits right over the original but is slightly larger due to negative margins
+                                                    // It stays on the right because it's absolute to the sidebar
+                                                    className="absolute -inset-10 bg-white rounded-2xl shadow-[0_40px_80px_-15px_rgba(0,0,0,0.5)] border border-slate-200 z-[100] p-4 pointer-events-none flex items-center justify-center overflow-hidden"
+                                                >
+                                                    <motion.img
+                                                        layout
+                                                        src={previewUrl}
+                                                        alt="Hover Zoom Evidence"
+                                                        className="w-full h-full object-contain rounded-xl"
+                                                        animate={{ scale: hoverZoom }}
+                                                        transition={{ duration: 0.1 }}
+                                                    />
+                                                </motion.div>
+                                            )}
+                                        </AnimatePresence>
 
                                         <div className="mt-4 p-4 bg-white rounded-lg border border-slate-200 shadow-sm">
                                             <p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest mb-1">Source File</p>
@@ -1005,7 +1061,7 @@ export default function App() {
                                         </div>
                                     ) : (
                                         <>
-                                            <div className="bg-emerald-50 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-8 text-emerald-600 shadow-sm border border-emerald-100">
+                                            <div className="bg-blue-50 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-8 text-blue-600 shadow-sm border border-blue-100">
                                                 <CheckCircle size={40} />
                                             </div>
                                             <h2 className="text-3xl font-bold text-slate-900 mb-4 tracking-tight">Processing Complete</h2>
@@ -1089,18 +1145,18 @@ function FileUploadZone({ label, file, setFile, icon }) {
     return (
         <div className="space-y-2">
             <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">{label}</span>
-            <label className={`flex items-center space-x-4 p-4 rounded-xl border-2 border-dashed transition-all cursor-pointer bg-slate-50/50 ${file ? 'border-emerald-200 bg-emerald-50/30' : 'border-slate-200 hover:border-brand-primary/40 hover:bg-slate-50'
+            <label className={`flex items-center space-x-4 p-4 rounded-xl border-2 border-dashed transition-all cursor-pointer bg-slate-50/50 ${file ? 'border-blue-200 bg-blue-50/30' : 'border-slate-200 hover:border-brand-primary/40 hover:bg-slate-50'
                 }`}>
                 <input type="file" className="hidden" onChange={(e) => setFile(e.target.files[0])} />
-                <div className={`p-2.5 rounded-lg shadow-sm border ${file ? 'bg-white border-emerald-100 text-emerald-600' : 'bg-white border-slate-100 text-slate-400'
+                <div className={`p-2.5 rounded-lg shadow-sm border ${file ? 'bg-white border-blue-100 text-blue-600' : 'bg-white border-slate-100 text-slate-400'
                     }`}>
                     {file ? <CheckCircle size={18} /> : icon}
                 </div>
                 <div className="flex-1 min-w-0">
-                    <p className={`text-[11px] font-bold truncate ${file ? 'text-emerald-800' : 'text-slate-500 uppercase tracking-wider'}`}>
+                    <p className={`text-[11px] font-bold truncate ${file ? 'text-blue-800' : 'text-slate-500 uppercase tracking-wider'}`}>
                         {file ? file.name : 'Select File'}
                     </p>
-                    {file && <p className="text-[9px] text-emerald-600 font-bold uppercase tracking-widest mt-0.5">Ready for Sync</p>}
+                    {file && <p className="text-[9px] text-blue-600 font-bold uppercase tracking-widest mt-0.5">Ready for Sync</p>}
                 </div>
             </label>
         </div>

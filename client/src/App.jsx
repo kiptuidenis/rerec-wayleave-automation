@@ -157,6 +157,7 @@ export default function App() {
                 r["Consent Signed"] || 'YES',
                 r["Relationship"] || '',
                 r["Phone No"] || '',
+                r["Ownership Document"] || 'UNDER ADJUDICATION',
                 r._id // Hidden ID for selection tracking
             ]);
 
@@ -170,8 +171,8 @@ export default function App() {
                 // Check if any value changed externally
                 let changed = false;
                 for (let i = 0; i < data.length; i++) {
-                    // Ignore the _id at the end (index 10)
-                    for (let j = 0; j < 10; j++) {
+                    // Ignore the _id at the end (index 11)
+                    for (let j = 0; j < 11; j++) {
                         if (data[i][j] !== prev[i][j]) {
                             changed = true;
                             break;
@@ -505,7 +506,8 @@ export default function App() {
                     "ID No",
                     "Consent Signed",
                     "Relationship",
-                    "Phone No"
+                    "Phone No",
+                    "Ownership Document"
                 ];
 
                 // Handsontable can give 'prop' as a string or number depending on config
@@ -733,7 +735,7 @@ export default function App() {
                                 {/* Toolbar */}
                                 <div className="bg-slate-50 border-b border-slate-200 p-4 flex justify-between items-center px-8 z-30">
                                     <div className="flex items-center space-x-4">
-                                        <div className="p-2 bg-emerald-50 rounded-lg text-emerald-600">
+                                        <div className="p-2 bg-blue-50 rounded-lg text-blue-600">
                                             <LayoutDashboard size={20} />
                                         </div>
                                         <div>
@@ -768,7 +770,7 @@ export default function App() {
                                         <button
                                             onClick={() => handleFinalize()}
                                             disabled={isFinalizing}
-                                            className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-6 py-2.5 rounded-lg font-bold uppercase tracking-wider text-[11px] flex items-center justify-center min-w-[180px] shadow-sm transition-all"
+                                            className="bg-brand-primary hover:bg-slate-800 disabled:opacity-50 text-white px-6 py-2.5 rounded-lg font-bold uppercase tracking-wider text-[11px] flex items-center justify-center min-w-[180px] shadow-sm transition-all"
                                         >
                                             {isFinalizing ? (
                                                 <div className="flex items-center space-x-2">
@@ -811,16 +813,17 @@ export default function App() {
                                                     'Consent',
                                                     'Relationship',
                                                     'Phone',
+                                                    'Ownership Doc',
                                                     '_id'
                                                 ]}
                                                 columns={[
                                                     { type: 'text' }, { type: 'text' }, { type: 'text' }, { type: 'text' },
                                                     { type: 'text' }, { type: 'text' }, { type: 'text' }, { type: 'text' },
-                                                    { type: 'text' }, { type: 'text' },
-                                                    { type: 'text', readOnly: true, editor: false } // hidden column logic via css or just ignore it
+                                                    { type: 'text' }, { type: 'text' }, { type: 'text' },
+                                                    { type: 'text', readOnly: true, editor: false }
                                                 ]}
                                                 hiddenColumns={{
-                                                    columns: [10],
+                                                    columns: [11],
                                                     indicators: false
                                                 }}
                                                 height={Math.floor(window.innerHeight * 0.72)}
@@ -840,8 +843,8 @@ export default function App() {
                                                 afterSelectionEnd={function (row) {
                                                     // Get the exact data array for the row sitting at this visual index
                                                     const rowData = this.getSourceDataAtRow(this.toPhysicalRow(row));
-                                                    if (rowData && rowData[10]) { // Index 10 is the hidden _id
-                                                        setSelectedId(rowData[10]);
+                                                    if (rowData && rowData[11]) { // Index 11 is the hidden _id
+                                                        setSelectedId(rowData[11]);
                                                     }
                                                 }}
                                                 viewportRowRenderingOffset={10}
@@ -1058,7 +1061,7 @@ export default function App() {
                                         </div>
                                     ) : (
                                         <>
-                                            <div className="bg-emerald-50 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-8 text-emerald-600 shadow-sm border border-emerald-100">
+                                            <div className="bg-blue-50 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-8 text-blue-600 shadow-sm border border-blue-100">
                                                 <CheckCircle size={40} />
                                             </div>
                                             <h2 className="text-3xl font-bold text-slate-900 mb-4 tracking-tight">Processing Complete</h2>
@@ -1142,18 +1145,18 @@ function FileUploadZone({ label, file, setFile, icon }) {
     return (
         <div className="space-y-2">
             <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">{label}</span>
-            <label className={`flex items-center space-x-4 p-4 rounded-xl border-2 border-dashed transition-all cursor-pointer bg-slate-50/50 ${file ? 'border-emerald-200 bg-emerald-50/30' : 'border-slate-200 hover:border-brand-primary/40 hover:bg-slate-50'
+            <label className={`flex items-center space-x-4 p-4 rounded-xl border-2 border-dashed transition-all cursor-pointer bg-slate-50/50 ${file ? 'border-blue-200 bg-blue-50/30' : 'border-slate-200 hover:border-brand-primary/40 hover:bg-slate-50'
                 }`}>
                 <input type="file" className="hidden" onChange={(e) => setFile(e.target.files[0])} />
-                <div className={`p-2.5 rounded-lg shadow-sm border ${file ? 'bg-white border-emerald-100 text-emerald-600' : 'bg-white border-slate-100 text-slate-400'
+                <div className={`p-2.5 rounded-lg shadow-sm border ${file ? 'bg-white border-blue-100 text-blue-600' : 'bg-white border-slate-100 text-slate-400'
                     }`}>
                     {file ? <CheckCircle size={18} /> : icon}
                 </div>
                 <div className="flex-1 min-w-0">
-                    <p className={`text-[11px] font-bold truncate ${file ? 'text-emerald-800' : 'text-slate-500 uppercase tracking-wider'}`}>
+                    <p className={`text-[11px] font-bold truncate ${file ? 'text-blue-800' : 'text-slate-500 uppercase tracking-wider'}`}>
                         {file ? file.name : 'Select File'}
                     </p>
-                    {file && <p className="text-[9px] text-emerald-600 font-bold uppercase tracking-widest mt-0.5">Ready for Sync</p>}
+                    {file && <p className="text-[9px] text-blue-600 font-bold uppercase tracking-widest mt-0.5">Ready for Sync</p>}
                 </div>
             </label>
         </div>

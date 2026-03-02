@@ -42,7 +42,7 @@ COL_MAP = {
     10: "Relationship",
     11: "ID No",
     12: "Phone No",
-    13: None,                 # Ownership Document (empty)
+    13: "Ownership Document",
     14: "Consent Signed",
 }
 
@@ -94,7 +94,27 @@ class ConsentExtractor:
                         "rotation": page.rotation
                     })
                 
-                # Process the chunk in parallel using threads
+            # Process the chunk in parallel using threads
+            for chunk_start in range(0, num_pages, chunk_size):
+                chunk_end = min(chunk_start + chunk_size, num_pages)
+                p_tasks = []
+                
+                for page_num in range(chunk_start, chunk_end):
+                    if page_num in processed_pages:
+                        completed_count += 1
+                        continue
+                        
+                    page = doc[page_num]
+                    pix = page.get_pixmap(dpi=150)
+                    img_data = pix.tobytes("png")
+                    p_tasks.append({
+                        "page_num": page_num,
+                        "img_data": img_data,
+                        "page_width": page.rect.width,
+                        "page_height": page.rect.height,
+                        "rotation": page.rotation
+                    })
+                
                 with ThreadPoolExecutor(max_workers=10) as executor:
                     future_to_page = {
                         executor.submit(self.process_page_parallel, task): task["page_num"] 
@@ -104,24 +124,43 @@ class ConsentExtractor:
                     for future in as_completed(future_to_page):
                         p_num = future_to_page[future]
                         completed_count += 1
-                        
-                        # We don't swallow exceptions here anymore. 
-                        # If future.result() raises, it bubbles up to catch block and aborts stream.
                         data = future.result()
+                        results[p_num] = data
                         
-                        # Yield immediate progress update
                         yield p_num, {"type": "progress", "current": completed_count, "total": num_pages, "page": p_num + 1}
+
+            # Sequential Pass to resolve "Ownership Document"
+            print("  Finalizing document classification and sequential lookahead...")
+            for i in range(num_pages):
+                data = results[i]
+                if data and data.get("is_wayleave_consent_form"):
+                    # Scan forward until the next consent form or EOF
+                    ownership_doc = "UNDER ADJUDICATION"
+                    for j in range(i + 1, num_pages):
+                        next_data = results[j]
+                        if not next_data: continue
                         
-                        # Yield the actual data immediately instead of accumulating
-                        if data and data.get("is_wayleave_consent_form"):
-                            yield p_num, {"type": "data", "page_num": p_num, "data": data}
-                        elif data:
-                            print(f"    [Skipping Page {p_num+1}] Not a Wayleave Consent Form")
-                            yield p_num, {"type": "skip", "page_num": p_num}
-                        else:
-                            # AI returned None (likely JSON decode error, not fatal network error)
-                            print(f"    [Page {p_num+1}] AI returned None, skipping.")
-                            yield p_num, {"type": "skip", "page_num": p_num}
+                        if next_data.get("is_wayleave_consent_form"):
+                            break # Hit the next person's form
+                        
+                        dt = next_data.get("document_type", "OTHER")
+                        if dt == "TITLE_DEED":
+                            ownership_doc = "TITLE DEED"
+                            break # Conclusive for this group
+                        elif dt == "LAND_SALE_AGREEMENT":
+                            if ownership_doc in ["UNDER ADJUDICATION", "SEARCH AWAITED"]:
+                                ownership_doc = "LAND SALE AGREEMENT"
+                        elif dt == "SEARCH_DOCUMENT":
+                            if ownership_doc == "UNDER ADJUDICATION":
+                                ownership_doc = "SEARCH AWAITED"
+                    
+                    data["Ownership Document"] = ownership_doc
+                    yield i, {"type": "data", "page_num": i, "data": data}
+                elif data:
+                    print(f"    [Page {i+1}] {data.get('document_type', 'OTHER')}")
+                    yield i, {"type": "skip", "page_num": i}
+                else:
+                    yield i, {"type": "skip", "page_num": i}
                     
         except Exception as e:
             print(f"[Extractor Fatal Error] {e}")
@@ -147,34 +186,39 @@ class ConsentExtractor:
         """Core Gemini call logic separated for parallel use"""
         try:
             prompt = """
-            Determine if this image is a 'WAYLEAVE CONSENT FORM'. 
-            Standard forms have 'WAYLEAVE CONSENT FORM' as a title and fields for Land owner, Plot No, etc. 
-            Scanned IDs, Maps, Title Deeds, or other documents are NOT consent forms.
+            Identify the type of this document and extract details if it is a 'WAYLEAVE CONSENT FORM'.
+            
+            Document Types:
+            - 'WAYLEAVE_CONSENT_FORM': Standard form with 'WAYLEAVE CONSENT FORM' title and fields for Land owner, Plot No, etc.
+            - 'TITLE_DEED': Land ownership document (e.g., Certificate of Title, Lease, Allotment Letter).
+            - 'LAND_SALE_AGREEMENT': Agreement documenting land transfer/sale between parties.
+            - 'SEARCH_DOCUMENT': Official land search results/documents from the land registry.
+            - 'ID_PHOTOCOPY': Photocopy of a National ID or Passport.
+            - 'OTHER': Any other document.
 
-            Extract the following from this image.
             Return ONLY valid JSON -- no markdown, no explanation.
 
             {
+              "document_type": "WAYLEAVE_CONSENT_FORM" | "TITLE_DEED" | "LAND_SALE_AGREEMENT" | "SEARCH_DOCUMENT" | "ID_PHOTOCOPY" | "OTHER",
               "is_wayleave_consent_form": true or false,
-              "Project Name": "Name of project/village",
-              "Constituency": "Constituency name",
-              "County": "County name",
-              "Plot No": "EXTRACT ONLY THE DIGITS (e.g. if 'Plot 45/A' return '45', if 'LR 123' return '123')",
-              "Owned by": "Full name of the land owner listed at the top",
-              "Signed by": "Full name of the person who signed as Proprietor/Occupier (NOT witness)",
-              "Relationship": "Relationship of signer to owner (e.g. SELF, WIFE, SON, HUSBAND)",
-              "ID No": "ID number of the signer",
-              "Phone No": "Phone number of the signer",
-              "Consent Signed": "YES or NO",
-              "proprietor_name": "Same as 'Signed by' - used for map matching",
-              "title_number": "Same as 'Plot No' - used for map matching",
+              "Project Name": "Name of project/village (only for CONSENT FORM)",
+              "Constituency": "Constituency name (only for CONSENT FORM)",
+              "County": "County name (only for CONSENT FORM)",
+              "Plot No": "EXTRACT ONLY THE DIGITS (only for CONSENT FORM)",
+              "Owned by": "Full name of the land owner (only for CONSENT FORM)",
+              "Signed by": "Full name of signer (only for CONSENT FORM)",
+              "Relationship": "Relationship to owner (only for CONSENT FORM)",
+              "ID No": "ID number (only for CONSENT FORM)",
+              "Phone No": "Phone number (only for CONSENT FORM)",
+              "Consent Signed": "YES or NO (only for CONSENT FORM)",
+              "proprietor_name": "Same as 'Signed by'",
+              "title_number": "Same as 'Plot No'",
               "sketch_box_1000": [ymin, xmin, ymax, xmax]
             }
 
             Rules:
-            - If is_wayleave_consent_form is false, return null for all fields except is_wayleave_consent_form.
-            - For 'Plot No', extract ONLY the numerical digits. Remove all text prefixes or suffixes.
-            - For 'sketch_box_1000', return its bounding box as [ymin, xmin, ymax, xmax] on a scale of 0-1000.
+            - For 'Plot No', extract ONLY the numerical digits.
+            - If not a WAYLEAVE_CONSENT_FORM, return null for all fields except document_type and is_wayleave_consent_form.
             """
             
             import time

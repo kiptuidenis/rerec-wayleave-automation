@@ -65,6 +65,7 @@ export default function App() {
     const [isPreviewLoading, setIsPreviewLoading] = useState(false);
     const [isLightboxOpen, setIsLightboxOpen] = useState(false);
     const [isHoverPreviewOpen, setIsHoverPreviewOpen] = useState(false);
+    const [hoverZoom, setHoverZoom] = useState(1);
     const [skippedCount, setSkippedCount] = useState(0);
     const [lightboxZoom, setLightboxZoom] = useState(1);
 
@@ -850,7 +851,20 @@ export default function App() {
                                         <div
                                             className="flex-1 rounded-xl overflow-hidden border border-slate-200 bg-slate-200/50 flex items-center justify-center relative shadow-inner"
                                             onMouseEnter={() => previewUrl && setIsHoverPreviewOpen(true)}
-                                            onMouseLeave={() => setIsHoverPreviewOpen(false)}
+                                            onMouseLeave={() => {
+                                                setIsHoverPreviewOpen(false);
+                                                setHoverZoom(1);
+                                            }}
+                                            onWheel={(e) => {
+                                                if (isHoverPreviewOpen) {
+                                                    // Prevent page scrolling while zooming
+                                                    e.preventDefault();
+                                                    setHoverZoom(prev => {
+                                                        const delta = e.deltaY > 0 ? -0.2 : 0.2;
+                                                        return Math.min(Math.max(1, prev + delta), 4);
+                                                    });
+                                                }
+                                            }}
                                         >
                                             {isPreviewLoading ? (
                                                 <div className="flex flex-col items-center space-y-4">
@@ -887,12 +901,15 @@ export default function App() {
                                                     transition={{ type: "spring", damping: 25, stiffness: 300 }}
                                                     // This box sits right over the original but is slightly larger due to negative margins
                                                     // It stays on the right because it's absolute to the sidebar
-                                                    className="absolute -inset-10 bg-white rounded-2xl shadow-[0_40px_80px_-15px_rgba(0,0,0,0.5)] border border-slate-200 z-[100] p-4 pointer-events-none flex items-center justify-center"
+                                                    className="absolute -inset-10 bg-white rounded-2xl shadow-[0_40px_80px_-15px_rgba(0,0,0,0.5)] border border-slate-200 z-[100] p-4 pointer-events-none flex items-center justify-center overflow-hidden"
                                                 >
-                                                    <img
+                                                    <motion.img
+                                                        layout
                                                         src={previewUrl}
                                                         alt="Hover Zoom Evidence"
                                                         className="w-full h-full object-contain rounded-xl"
+                                                        animate={{ scale: hoverZoom }}
+                                                        transition={{ duration: 0.1 }}
                                                     />
                                                 </motion.div>
                                             )}

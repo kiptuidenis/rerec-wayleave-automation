@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
     Upload,
@@ -78,7 +78,8 @@ export default function App() {
     const [finalDownloadUrl, setFinalDownloadUrl] = useState(null);
     const [finalFilename, setFinalFilename] = useState("");
 
-    // Tracking for extraction resume
+    // Hosting the preview zoom logic in a ref to handle non-passive wheel events
+    const previewRef = useRef(null);
     const [processedPages, setProcessedPages] = useState({});
 
     // Timers
@@ -108,9 +109,35 @@ export default function App() {
         return `${m}:${s.toString().padStart(2, '0')}`;
     };
 
+    // Handle mouse wheel zoom with passive: false to prevent page scroll
+    useEffect(() => {
+        const el = previewRef.current;
+        if (!el) return;
+
+        const handleWheel = (e) => {
+            if (isHoverPreviewOpen) {
+                // This is the critical part to stop page scrolling
+                e.preventDefault();
+                setHoverZoom(prev => {
+                    const delta = e.deltaY > 0 ? -0.2 : 0.2;
+                    return Math.min(Math.max(1, prev + delta), 4);
+                });
+            }
+        };
+
+        el.addEventListener('wheel', handleWheel, { passive: false });
+        return () => el.removeEventListener('wheel', handleWheel);
+    }, [isHoverPreviewOpen]);
+
     // Close lightbox on Escape key
     useEffect(() => {
-        const onKey = (e) => { if (e.key === 'Escape') { setIsLightboxOpen(false); setLightboxZoom(1); } };
+        const onKey = (e) => {
+            if (e.key === 'Escape') {
+                setIsLightboxOpen(false);
+                setLightboxZoom(1);
+                setIsHoverPreviewOpen(false);
+            }
+        };
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
     }, []);
@@ -849,21 +876,12 @@ export default function App() {
                                         </div>
 
                                         <div
+                                            ref={previewRef}
                                             className="flex-1 rounded-xl overflow-hidden border border-slate-200 bg-slate-200/50 flex items-center justify-center relative shadow-inner"
                                             onMouseEnter={() => previewUrl && setIsHoverPreviewOpen(true)}
                                             onMouseLeave={() => {
                                                 setIsHoverPreviewOpen(false);
                                                 setHoverZoom(1);
-                                            }}
-                                            onWheel={(e) => {
-                                                if (isHoverPreviewOpen) {
-                                                    // Prevent page scrolling while zooming
-                                                    e.preventDefault();
-                                                    setHoverZoom(prev => {
-                                                        const delta = e.deltaY > 0 ? -0.2 : 0.2;
-                                                        return Math.min(Math.max(1, prev + delta), 4);
-                                                    });
-                                                }
                                             }}
                                         >
                                             {isPreviewLoading ? (

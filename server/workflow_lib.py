@@ -2,8 +2,7 @@ import os
 import io
 import json
 import fitz  # PyMuPDF
-# Silence MuPDF xref/format spam for slightly corrupted PDFs
-fitz.TOOLS.mupdf_display_errors(False)
+
 from google import genai
 from google.genai import types
 from thefuzz import fuzz
@@ -14,6 +13,7 @@ from dotenv import load_dotenv
 from openpyxl import load_workbook
 from openpyxl.styles import Font, Border, Alignment
 from copy import copy
+fitz.TOOLS.mupdf_display_errors(False)
 
 # Load environment variables from .env file if it exists
 load_dotenv()

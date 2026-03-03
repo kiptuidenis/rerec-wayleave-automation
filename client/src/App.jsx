@@ -713,7 +713,7 @@ export default function App() {
                                         <button
                                             onClick={handleExtract}
                                             disabled={loading || consentFiles.length === 0}
-                                            className="w-full bg-brand-accent hover:brightness-110 text-white font-bold py-4 rounded-xl flex flex-col items-center justify-center transition-all shadow-lg hover:shadow-xl active:transform active:scale-[0.99] disabled:opacity-40 overflow-hidden relative"
+                                            className="w-full bg-brand-primary hover:bg-slate-800 text-white font-bold py-4 rounded-xl flex flex-col items-center justify-center transition-all shadow-lg hover:shadow-xl active:transform active:scale-[0.99] disabled:opacity-40 overflow-hidden relative"
                                         >
                                             {loading ? (
                                                 <div className="w-full px-8 flex flex-col items-center">

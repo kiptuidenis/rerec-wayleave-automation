@@ -147,18 +147,20 @@ export default function App() {
         if (results.length > 0) {
             console.log("Syncing results to HotData. Results count:", results.length);
             const data = results.map(r => [
-                r["Project Name"] || '',
-                r["Signed by"] || '',
-                r["Plot No"] || '',
-                r["Owned by"] || '',
-                r["Constituency"] || '',
-                r["County"] || '',
-                r["ID No"] || '',
-                r["Consent Signed"] || 'YES',
-                r["Relationship"] || '',
-                r["Phone No"] || '',
-                r["Ownership Document"] || 'UNDER ADJUDICATION',
-                r._id // Hidden ID for selection tracking
+                r["Project Name"] || '', // Col 2
+                r["Constituency"] || '', // Col 3
+                r["County"] || '',       // Col 4
+                '',                      // Col 5 (Region)
+                '',                      // Col 6 (Affected land)
+                r["Plot No"] || '',      // Col 7
+                r["Owned by"] || '',     // Col 8
+                r["Signed by"] || '',    // Col 9
+                r["Relationship"] || '', // Col 10
+                r["ID No"] || '',        // Col 11
+                r["Phone No"] || '',      // Col 12
+                r["Ownership Document"] || 'UNDER ADJUDICATION', // Col 13
+                r["Consent Signed"] || 'YES', // Col 14
+                r._id // Hidden ID at Index 14
             ]);
 
             // Only update hotData if it's actually empty or the size changed
@@ -168,11 +170,10 @@ export default function App() {
                 if (prev.length === 0 || prev.length !== data.length) {
                     return data;
                 }
-                // Check if any value changed externally
+                // Check if any value changed externally (checking all 13 mapped columns)
                 let changed = false;
                 for (let i = 0; i < data.length; i++) {
-                    // Ignore the _id at the end (index 11)
-                    for (let j = 0; j < 11; j++) {
+                    for (let j = 0; j < 13; j++) {
                         if (data[i][j] !== prev[i][j]) {
                             changed = true;
                             break;
@@ -190,10 +191,17 @@ export default function App() {
     // --- EFFECTS ---
     useEffect(() => {
         const abortController = new AbortController();
+        let currentUrl = null;
 
         const fetchPreview = async () => {
             const selected = results.find(r => r._id === selectedId);
-            if (!selected) return;
+            if (!selected) {
+                if (previewUrl) {
+                    window.URL.revokeObjectURL(previewUrl);
+                    setPreviewUrl(null);
+                }
+                return;
+            }
 
             setIsPreviewLoading(true);
             try {
@@ -209,15 +217,23 @@ export default function App() {
                     signal: abortController.signal
                 });
 
-                if (previewUrl) window.URL.revokeObjectURL(previewUrl);
                 const url = window.URL.createObjectURL(new Blob([res.data]));
-                setPreviewUrl(url);
+                currentUrl = url;
+
+                setPreviewUrl(prev => {
+                    if (prev) window.URL.revokeObjectURL(prev);
+                    return url;
+                });
             } catch (err) {
                 if (axios.isCancel(err) || err.name === 'CanceledError' || (err.message && err.message.includes('canceled'))) {
                     console.log('Preview fetch canceled because another row was selected.');
+                    if (currentUrl) window.URL.revokeObjectURL(currentUrl);
                 } else {
                     console.error("Preview failed", err);
-                    setPreviewUrl(null);
+                    setPreviewUrl(prev => {
+                        if (prev) window.URL.revokeObjectURL(prev);
+                        return null;
+                    });
                 }
             } finally {
                 if (!abortController.signal.aborted) {
@@ -227,10 +243,19 @@ export default function App() {
         };
 
         if (selectedId) fetchPreview();
-        else setPreviewUrl(null);
+        else {
+            setPreviewUrl(prev => {
+                if (prev) window.URL.revokeObjectURL(prev);
+                return null;
+            });
+        }
 
         return () => {
             abortController.abort();
+            setPreviewUrl(prev => {
+                if (prev) window.URL.revokeObjectURL(prev);
+                return null;
+            });
         };
     }, [selectedId, results, consentFiles]);
 
@@ -327,7 +352,7 @@ export default function App() {
                         } else if (event.type === 'progress') {
                             const percent = Math.round((event.current / event.total) * 100);
                             setProgress(percent);
-                            setStatusMsg(`Scanned ${event.current} of ${event.total} pages...`);
+                            setStatusMsg(event.status || `Scanned ${event.current} of ${event.total} pages...`);
                         } else if (event.type === 'data') {
                             accumulatedResults.push(event.data);
                             // Track successful page for this file
@@ -485,38 +510,44 @@ export default function App() {
         setResults(prev => prev.map(r => r._id === id ? { ...r, [field]: value } : r));
     };
 
-    const handleHotChange = (changes, source) => {
+    const handleHotChange = function (changes, source) {
         if (!changes || source === 'loadData') return;
+
+        // 'this' refers to the Handsontable instance if defined as function()
+        const hot = this;
 
         setResults(prevResults => {
             const nextResults = [...prevResults];
             let hasChanged = false;
 
-            changes.forEach(([row, prop, oldValue, newValue]) => {
+            changes.forEach(([visualRow, prop, oldValue, newValue]) => {
                 if (oldValue === newValue) return;
 
-                // Map prop (which is the index in hotData) to field name
+                // CRITICAL FIX: Convert visual row index to physical index (data source index)
+                // This is required because columnSorting is enabled.
+                const physicalRow = hot.toPhysicalRow(visualRow);
+
                 const colMap = [
-                    "Project Name",
-                    "Signed by",
-                    "Plot No",
-                    "Owned by",
-                    "Constituency",
-                    "County",
-                    "ID No",
-                    "Consent Signed",
-                    "Relationship",
-                    "Phone No",
-                    "Ownership Document"
+                    "Project Name",      // 0
+                    "Constituency",      // 1
+                    "County",            // 2
+                    null,                // 3 (Region)
+                    null,                // 4 (Affected land)
+                    "Plot No",           // 5
+                    "Owned by",          // 6
+                    "Signed by",         // 7
+                    "Relationship",      // 8
+                    "ID No",             // 9
+                    "Phone No",          // 10
+                    "Ownership Document", // 11
+                    "Consent Signed"     // 12
                 ];
 
-                // Handsontable can give 'prop' as a string or number depending on config
-                // In our case it's the index because data is an array of arrays
                 const colIndex = parseInt(prop);
                 const field = colMap[colIndex];
 
-                if (field && nextResults[row]) {
-                    nextResults[row] = { ...nextResults[row], [field]: newValue };
+                if (field && nextResults[physicalRow]) {
+                    nextResults[physicalRow] = { ...nextResults[physicalRow], [field]: newValue };
                     hasChanged = true;
                 }
             });
@@ -804,26 +835,30 @@ export default function App() {
                                                 data={hotData}
                                                 colHeaders={[
                                                     'Project',
-                                                    'Proprietor (Signer)',
-                                                    'Plot No',
-                                                    'Owned By',
                                                     'Constituency',
                                                     'County',
-                                                    'ID No',
-                                                    'Consent',
+                                                    'Region',
+                                                    'Affected Land',
+                                                    'Plot No',
+                                                    'Owned By',
+                                                    'Proprietor (Signer)',
                                                     'Relationship',
+                                                    'ID No',
                                                     'Phone',
                                                     'Ownership Doc',
+                                                    'Consent',
                                                     '_id'
                                                 ]}
                                                 columns={[
-                                                    { type: 'text' }, { type: 'text' }, { type: 'text' }, { type: 'text' },
-                                                    { type: 'text' }, { type: 'text' }, { type: 'text' }, { type: 'text' },
                                                     { type: 'text' }, { type: 'text' }, { type: 'text' },
+                                                    { type: 'text', readOnly: true }, { type: 'text', readOnly: true },
+                                                    { type: 'text' }, { type: 'text' }, { type: 'text' },
+                                                    { type: 'text' }, { type: 'text' }, { type: 'text' },
+                                                    { type: 'text' }, { type: 'text' },
                                                     { type: 'text', readOnly: true, editor: false }
                                                 ]}
                                                 hiddenColumns={{
-                                                    columns: [11],
+                                                    columns: [13],
                                                     indicators: false
                                                 }}
                                                 height={Math.floor(window.innerHeight * 0.72)}
@@ -843,8 +878,8 @@ export default function App() {
                                                 afterSelectionEnd={function (row) {
                                                     // Get the exact data array for the row sitting at this visual index
                                                     const rowData = this.getSourceDataAtRow(this.toPhysicalRow(row));
-                                                    if (rowData && rowData[11]) { // Index 11 is the hidden _id
-                                                        setSelectedId(rowData[11]);
+                                                    if (rowData && rowData[13]) { // Index 13 is the hidden _id
+                                                        setSelectedId(rowData[13]);
                                                     }
                                                 }}
                                                 viewportRowRenderingOffset={10}

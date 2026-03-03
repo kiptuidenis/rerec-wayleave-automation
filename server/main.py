@@ -18,11 +18,50 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 # CRITICAL FIX: The user's C: drive has 0 bytes free. 
 # Force all temporary spooling (FastAPI uploads, Python tmp files) to use the F: drive.
 temp_dir_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".tmp")
-os.makedirs(temp_dir_path, exist_ok=True)
+
+_last_cleanup_time = 0
+
 import tempfile
 tempfile.tempdir = temp_dir_path
 
 app = FastAPI(title="Wayleave Automation API")
+
+def cleanup_old_temp_files():
+    """Cleanup old temp files from previous sessions or abandoned runs."""
+    import time
+    global _last_cleanup_time
+    now = time.time()
+    
+    # Run at most once every 10 minutes to avoid IO churn
+    if now - _last_cleanup_time < 600:
+        return
+        
+    if os.path.exists(temp_dir_path):
+        print(f"Running temp file cleanup on {temp_dir_path}...")
+        for item in os.listdir(temp_dir_path):
+            item_path = os.path.join(temp_dir_path, item)
+            try:
+                # Remove anything older than 1 hour
+                if os.path.getmtime(item_path) < now - 3600:
+                    if os.path.isdir(item_path):
+                        shutil.rmtree(item_path, ignore_errors=True)
+                    else:
+                        os.remove(item_path)
+            except Exception as e:
+                print(f"Cleanup error on {item}: {e}")
+    _last_cleanup_time = now
+
+@app.on_event("startup")
+async def startup_event():
+    cleanup_old_temp_files()
+
+def ensure_temp_dir():
+    if not os.path.exists(temp_dir_path):
+        os.makedirs(temp_dir_path, exist_ok=True)
+    
+    # Periodically trigger cleanup during use
+    cleanup_old_temp_files()
+    return temp_dir_path
 
 # Enable CORS for React dev server
 app.add_middleware(
@@ -59,6 +98,7 @@ async def extract_documents(request: Request):
     from fastapi.responses import StreamingResponse
     import asyncio
     
+    ensure_temp_dir()
     try:
         form = await request.form()
         files = form.getlist("files")
@@ -80,19 +120,40 @@ async def extract_documents(request: Request):
                 processed_map[k] = set(v)
         except Exception as e:
             print(f"Warning: Failed to parse processed_pages: {e}")
-
+    
     extractor = ConsentExtractor()
     
     async def event_generator():
         temp_files = []
         try:
-            # Prepare all files first
-            for file in files:
+            # Prepare and Save all files (Phase 0)
+            for i, file in enumerate(files):
+                yield json.dumps({
+                    "type": "progress", 
+                    "current": 0, 
+                    "total": 100, 
+                    "status": f"Preparing file {i+1} of {len(files)}: {file.filename}..."
+                }) + "\n"
+                
                 suffix = os.path.splitext(file.filename)[1]
                 with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                     shutil.copyfileobj(file.file, tmp)
+                    # Close UploadFile handle to avoid Windows locks
+                    await file.close()
                     temp_files.append({"name": file.filename, "path": tmp.name})
             
+            # PHASE 1: Calculate total work upfront
+            total_pages_global = 0
+            for item in temp_files:
+                try:
+                    with fitz.open(item["path"]) as d:
+                        total_pages_global += len(d)
+                except Exception:
+                    pass
+            
+            yield json.dumps({"type": "init", "total_pages": total_pages_global}) + "\n"
+            
+            global_completed = 0
             for item in temp_files:
                 # Yield filename for context
                 yield json.dumps({"type": "file_start", "filename": item["name"]}) + "\n"
@@ -100,15 +161,29 @@ async def extract_documents(request: Request):
                 # Get the set of already processed pages for this specific file
                 skip_pages = processed_map.get(item["name"], set())
                 
+                # Update global_completed for already processed pages
+                global_completed += len(skip_pages)
+
                 # extractor.extract_details is now yielding (page_num, event_dict)
-                for page_num, event in extractor.extract_details(item["path"], processed_pages=skip_pages):
-                    if event["type"] == "data":
+                for page_num, event in extractor.extract_details(
+                    item["path"], 
+                    processed_pages=skip_pages,
+                    global_offset=global_completed,
+                    global_total=total_pages_global
+                ):
+                    if event["type"] == "progress":
+                        # We let the extractor manage the math
+                        pass
+                    elif event["type"] == "data":
                         # Enrich data with metadata
                         data = event["data"]
                         data["_id"] = f"{item['name']}_p{page_num}"
                         data["_file_name"] = item["name"]
                         data["_page_num"] = page_num
                         event["data"] = data
+                        global_completed += 1
+                    elif event["type"] == "skip":
+                        global_completed += 1
                     
                     yield json.dumps(event) + "\n"
                     # Small sleep to ensure the message is flushed and UI can keep up
@@ -138,6 +213,7 @@ async def download_excel(
     extraction_results_file: UploadFile = File(...),
     excel_template: UploadFile = File(...)
 ):
+    ensure_temp_dir()
     try:
         content = await extraction_results_file.read()
         results_list = json.loads(content.decode("utf-8"))
@@ -149,6 +225,8 @@ async def download_excel(
         excel_path = os.path.join(temp_dir, "template.xlsx")
         with open(excel_path, "wb") as f:
             shutil.copyfileobj(excel_template.file, f)
+        await excel_template.close()
+        await extraction_results_file.close()
             
         output_excel_buffer = BytesIO()
         ExcelWriter.append_data(excel_path, results_list, output_excel_buffer)
@@ -177,6 +255,7 @@ async def finalize_project(
     import asyncio
     import uuid
     
+    ensure_temp_dir()
     try:
         content = await extraction_results_file.read()
         results_list = json.loads(content.decode("utf-8"))
@@ -193,16 +272,19 @@ async def finalize_project(
             site_plan_path = os.path.join(temp_dir, "master_site_plan.pdf")
             with open(site_plan_path, "wb") as f:
                 shutil.copyfileobj(site_plan.file, f)
+            await site_plan.close()
             
             excel_path = os.path.join(temp_dir, "template.xlsx")
             with open(excel_path, "wb") as f:
                 shutil.copyfileobj(excel_template.file, f)
+            await excel_template.close()
                 
             consent_map = {}
             for c_pdf in consent_pdfs:
                 c_path = os.path.join(temp_dir, c_pdf.filename)
                 with open(c_path, "wb") as f:
                     shutil.copyfileobj(c_pdf.file, f)
+                await c_pdf.close()
                 consent_map[c_pdf.filename] = c_path
 
             yield json.dumps({"type": "status", "message": "Opening Site Plan..."}) + "\n"
@@ -351,25 +433,22 @@ async def finalize_project(
                 "filename": "Wayleave_Automation_Results.zip"
             }) + "\n"
 
-        except Exception as e:
-            import traceback
-            error_details = traceback.format_exc()
-            print(f"Finalization Error: {e}\n{error_details}")
-            yield json.dumps({"type": "error", "message": str(e)}) + "\n"
-            
+        finally:
             # Ensure open documents are closed before cleaning up
             if 'locator' in locals() and hasattr(locator, 'close'):
                 locator.close()
                 
-            if os.path.exists(temp_dir):
-                for _ in range(3):
-                    try:
-                        shutil.rmtree(temp_dir)
-                        break
-                    except PermissionError:
-                        await asyncio.sleep(0.5)
-                    except Exception:
-                        break
+            # If we didn't register for download, CLEAN UP NOW
+            if file_id not in DOWNLOAD_REGISTRY:
+                print(f"Cleaning up finalize temp dir: {temp_dir}")
+                if os.path.exists(temp_dir):
+                    for _ in range(3):
+                        try:
+                            shutil.rmtree(temp_dir)
+                            break
+                        except Exception as e:
+                            print(f"Finalize cleanup error: {e}")
+                            await asyncio.sleep(0.5)
 
     return StreamingResponse(event_generator(), media_type="application/x-ndjson")
 
@@ -392,7 +471,7 @@ async def download_file(file_id: str, background_tasks: BackgroundTasks):
             except Exception: pass
         if file_id in DOWNLOAD_REGISTRY:
             del DOWNLOAD_REGISTRY[file_id]
-
+    
     background_tasks.add_task(cleanup)
     
     return FileResponse(
@@ -403,6 +482,7 @@ async def download_file(file_id: str, background_tasks: BackgroundTasks):
 
 @app.post("/preview")
 async def get_preview(request: Request):
+    ensure_temp_dir()
     try:
         form = await request.form()
         file = form.get("file")
@@ -418,6 +498,7 @@ async def get_preview(request: Request):
         suffix = os.path.splitext(file.filename)[1]
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
             shutil.copyfileobj(file.file, tmp)
+            await file.close()
             tmp_path = tmp.name
         
         try:
@@ -442,6 +523,7 @@ async def get_preview(request: Request):
 
 @app.post("/search-site-plan")
 async def search_site_plan(request: Request):
+    ensure_temp_dir()
     try:
         form = await request.form()
         file = form.get("file")
@@ -456,6 +538,7 @@ async def search_site_plan(request: Request):
         suffix = os.path.splitext(file.filename)[1]
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
             shutil.copyfileobj(file.file, tmp)
+            await file.close()
             tmp_path = tmp.name
             
         matches = []
@@ -498,6 +581,7 @@ async def analyze_site_plan(request: Request):
     """
     Validates if a site plan PDF has searchable text or if it is just a rasterized image/flattened drawing.
     """
+    ensure_temp_dir()
     try:
         form = await request.form()
         file = form.get("file")
@@ -511,6 +595,7 @@ async def analyze_site_plan(request: Request):
         suffix = os.path.splitext(file.filename)[1]
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
             shutil.copyfileobj(file.file, tmp)
+            await file.close()
             tmp_path = tmp.name
             
         try:
@@ -546,6 +631,7 @@ async def render_site_plan_hq(request: Request):
     """
     Renders a high-resolution PNG (150 DPI) of the site plan to display in the Step 2.5 Map Viewer.
     """
+    ensure_temp_dir()
     try:
         form = await request.form()
         file = form.get("file")
@@ -561,6 +647,7 @@ async def render_site_plan_hq(request: Request):
         suffix = os.path.splitext(file.filename)[1]
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
             shutil.copyfileobj(file.file, tmp)
+            await file.close()
             tmp_path = tmp.name
         
         try:

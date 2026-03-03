@@ -5,16 +5,15 @@ import { motion } from 'framer-motion';
 const API_BASE = "http://localhost:8000";
 
 const MapPinningView = ({ missingPins, sitePlanFile, onResolve, onBack }) => {
-    const [pageUrls, setPageUrls] = useState([]);
     const [isLoadingImage, setIsLoadingImage] = useState(true);
     const [errorMsg, setErrorMsg] = useState(null);
     const [activeRecordId, setActiveRecordId] = useState(missingPins.length > 0 ? missingPins[0]._id : null);
     const [pins, setPins] = useState({}); // { _id: { _manual_x: float, _manual_y: float, _manual_page: int } }
     const [scale, setScale] = useState(1);
+    const [loadedPages, setLoadedPages] = useState({}); // { index: url }
 
     // Multi-page Support
     const [totalPages, setTotalPages] = useState(0);
-    const [loadingProgress, setLoadingProgress] = useState({ current: 0, total: 0 });
 
     // Native Search Support
     const [searchQuery, setSearchQuery] = useState("");
@@ -99,19 +98,15 @@ const MapPinningView = ({ missingPins, sitePlanFile, onResolve, onBack }) => {
         }
     }, []);
 
-    // Create the high-res map view
+    // Initial fetch to get total pages
     useEffect(() => {
         if (!sitePlanFile) return;
 
         let active = true;
-        const objectUrls = [];
-
-        const fetchAllPages = async () => {
+        const fetchInitialInfo = async () => {
             setIsLoadingImage(true);
             setErrorMsg(null);
-
             try {
-                // Fetch page 0 first to get the total count
                 const formData = new FormData();
                 formData.append('file', sitePlanFile);
                 formData.append('page_num', '0');
@@ -121,58 +116,154 @@ const MapPinningView = ({ missingPins, sitePlanFile, onResolve, onBack }) => {
                     body: formData
                 });
 
-                if (!response.ok) throw new Error("Failed to render high-res map");
+                if (!response.ok) throw new Error("Failed to connect to backend");
 
                 const totalStr = response.headers.get("X-Total-Pages");
                 const total = totalStr ? parseInt(totalStr, 10) : 1;
 
-                if (!active) return;
-
-                setTotalPages(total);
-                setLoadingProgress({ current: 1, total });
-
-                const blob = await response.blob();
-                const url = URL.createObjectURL(blob);
-                objectUrls.push(url);
-                setPageUrls([...objectUrls]);
-
-                // If there are more pages, fetch them sequentially
-                for (let i = 1; i < total; i++) {
-                    if (!active) break;
-
-                    const fd = new FormData();
-                    fd.append('file', sitePlanFile);
-                    fd.append('page_num', i.toString());
-
-                    const res = await fetch(`${API_BASE}/render-site-plan-hq`, {
-                        method: 'POST',
-                        body: fd
-                    });
-
-                    if (res.ok) {
-                        const b = await res.blob();
-                        const u = URL.createObjectURL(b);
-                        objectUrls.push(u);
-                        setPageUrls([...objectUrls]);
-                    }
-                    if (active) setLoadingProgress({ current: i + 1, total });
+                if (active) {
+                    setTotalPages(total);
                 }
-
             } catch (err) {
                 console.error(err);
-                if (active) setErrorMsg("Could not load high-resolution Site Plan.");
+                if (active) setErrorMsg("Could not communicate with server.");
             } finally {
                 if (active) setIsLoadingImage(false);
             }
         };
 
-        fetchAllPages();
+        fetchInitialInfo();
+        return () => { active = false; };
+    }, [sitePlanFile]);
 
+    // Cleanup URLs on unmount or file change
+    useEffect(() => {
         return () => {
-            active = false;
-            objectUrls.forEach(url => URL.revokeObjectURL(url));
+            Object.values(loadedPages).forEach(url => URL.revokeObjectURL(url));
         };
     }, [sitePlanFile]);
+
+    const handlePageVisible = async (index) => {
+        if (loadedPages[index]) return;
+
+        try {
+            const formData = new FormData();
+            formData.append('file', sitePlanFile);
+            formData.append('page_num', index.toString());
+
+            const response = await fetch(`${API_BASE}/render-site-plan-hq`, {
+                method: 'POST',
+                body: formData
+            });
+
+            if (response.ok) {
+                const blob = await response.blob();
+                const url = URL.createObjectURL(blob);
+                setLoadedPages(prev => ({ ...prev, [index]: url }));
+            }
+        } catch (err) {
+            console.error(`Failed to load page ${index}`, err);
+        }
+    };
+
+    // Sub-component for a single page to handle its own lazy loading
+    const MapPage = ({ index, url }) => {
+        const pageRef = useRef(null);
+
+        useEffect(() => {
+            const observer = new IntersectionObserver(
+                ([entry]) => {
+                    if (entry.isIntersecting) {
+                        handlePageVisible(index);
+                    }
+                },
+                {
+                    root: scrollContainerRef.current,
+                    rootMargin: '1000px' // Preload buffer
+                }
+            );
+
+            if (pageRef.current) observer.observe(pageRef.current);
+            return () => observer.disconnect();
+        }, [index]);
+
+        return (
+            <div
+                ref={(el) => {
+                    pageRef.current = el;
+                    pageRefs.current[index] = el;
+                }}
+                className="relative mb-8 shadow-[0_10px_40px_-10px_rgba(0,0,0,0.3)] bg-white ring-1 ring-slate-200/50 min-h-[1200px] flex items-center justify-center overflow-hidden"
+                style={{ width: 'fit-content' }}
+                onDoubleClick={(e) => handleCanvasDoubleClick(e, index)}
+            >
+                {url ? (
+                    <img
+                        src={url}
+                        alt={`Site Plan Page ${index + 1}`}
+                        className="max-w-none select-none pointer-events-none block"
+                        onLoad={(e) => {
+                            // Optionally update dimensions if needed
+                        }}
+                    />
+                ) : (
+                    <div className="flex flex-col items-center space-y-4 p-20 text-slate-400">
+                        <Loader2 size={48} className="animate-spin text-blue-500" />
+                        <span className="text-sm font-bold uppercase tracking-widest">Loading Sheet {index + 1}...</span>
+                    </div>
+                )}
+
+                {/* Page Label */}
+                <div className="absolute top-6 left-6 bg-slate-900/80 text-white text-xs font-bold px-3 py-1.5 rounded-lg shadow-xl backdrop-blur-sm opacity-50 hover:opacity-100 transition-opacity pointer-events-none z-10 border border-white/20">
+                    Sheet {index + 1}
+                </div>
+
+                {/* Render dropped pins for THIS page */}
+                {Object.entries(pins).map(([id, coords]) => {
+                    if (coords._manual_page !== index) return null;
+                    return (
+                        <div
+                            key={id}
+                            className="absolute transform -translate-x-1/2 -translate-y-[100%] pointer-events-none drop-shadow-md pb-[2px] z-30"
+                            style={{
+                                left: `${coords._manual_x * 100}%`,
+                                top: `${coords._manual_y * 100}%`
+                            }}
+                        >
+                            <MapPin
+                                size={48 / scale}
+                                className={`${id === activeRecordId ? 'text-amber-500 animate-bounce' : 'text-emerald-500'}`}
+                                fill={id === activeRecordId ? '#fcd34d' : '#a7f3d0'}
+                                strokeWidth={1.5}
+                            />
+                        </div>
+                    );
+                })}
+
+                {/* Render Search Highlights for THIS page */}
+                {searchResults.map((match, matchIndex) => {
+                    if (match.page !== index) return null;
+                    const isActiveMatch = matchIndex === activeSearchIndex;
+                    return (
+                        <div
+                            key={`search-${matchIndex}`}
+                            className={`absolute pointer-events-none z-20 transition-all duration-300 ${isActiveMatch
+                                ? 'ring-4 ring-amber-400 bg-amber-400/30'
+                                : 'ring-2 ring-yellow-300 bg-yellow-300/20'
+                                }`}
+                            style={{
+                                left: `${match.x * 100}%`,
+                                top: `${match.y * 100}%`,
+                                width: `${match.w * 100}%`,
+                                height: `${match.h * 100}%`,
+                                boxShadow: isActiveMatch ? '0 0 20px 4px rgba(251, 191, 36, 0.4)' : 'none'
+                            }}
+                        />
+                    );
+                })}
+            </div>
+        );
+    };
 
     const handleCanvasDoubleClick = (e, pageIndex) => {
         if (!activeRecordId || isDragging) return;
@@ -579,10 +670,10 @@ const MapPinningView = ({ missingPins, sitePlanFile, onResolve, onBack }) => {
                         )}
                     </div>
 
-                    {isLoadingImage && pageUrls.length === 0 ? (
+                    {isLoadingImage && totalPages === 0 ? (
                         <div className="flex-1 flex flex-col items-center justify-center space-y-4 text-slate-500">
                             <Loader2 size={40} className="animate-spin text-blue-500" />
-                            <p className="text-xs uppercase font-bold tracking-widest text-slate-500">Rendering High-Res Cartography...</p>
+                            <p className="text-xs uppercase font-bold tracking-widest text-slate-500">Initialising Site Plan...</p>
                         </div>
                     ) : errorMsg ? (
                         <div className="flex-1 flex items-center justify-center text-red-500 font-bold text-sm">
@@ -602,74 +693,13 @@ const MapPinningView = ({ missingPins, sitePlanFile, onResolve, onBack }) => {
                                 className="inline-flex flex-col items-center p-8 origin-top-left"
                                 style={{ transform: `scale(${scale})`, minWidth: '100%' }}
                             >
-                                {pageUrls.map((url, index) => (
-                                    <div
+                                {Array.from({ length: totalPages }).map((_, index) => (
+                                    <MapPage
                                         key={index}
-                                        ref={(el) => pageRefs.current[index] = el}
-                                        className="relative mb-8 shadow-[0_10px_40px_-10px_rgba(0,0,0,0.3)] bg-white ring-1 ring-slate-200/50"
-                                        onDoubleClick={(e) => handleCanvasDoubleClick(e, index)}
-                                    >
-                                        <img src={url} alt={`Site Plan Page ${index + 1}`} className="max-w-none select-none pointer-events-none block" />
-
-                                        {/* Page Label */}
-                                        <div className="absolute top-4 left-4 bg-slate-900/80 text-white text-[10px] font-bold px-2 py-1 rounded shadow-sm opacity-50 hover:opacity-100 transition-opacity pointer-events-none z-10">
-                                            Sheet {index + 1}
-                                        </div>
-
-                                        {/* Render dropped pins for THIS page */}
-                                        {Object.entries(pins).map(([id, coords]) => {
-                                            if (coords._manual_page !== index) return null;
-                                            return (
-                                                <div
-                                                    key={id}
-                                                    className="absolute transform -translate-x-1/2 -translate-y-[100%] pointer-events-none drop-shadow-md pb-[2px] z-30"
-                                                    style={{
-                                                        left: `${coords._manual_x * 100}%`,
-                                                        top: `${coords._manual_y * 100}%`
-                                                    }}
-                                                >
-                                                    <MapPin
-                                                        size={48 / scale}
-                                                        className={`${id === activeRecordId ? 'text-amber-500 animate-bounce' : 'text-emerald-500'}`}
-                                                        fill={id === activeRecordId ? '#fcd34d' : '#a7f3d0'}
-                                                        strokeWidth={1.5}
-                                                    />
-                                                </div>
-                                            );
-                                        })}
-
-                                        {/* Render Search Highlights for THIS page */}
-                                        {searchResults.map((match, matchIndex) => {
-                                            if (match.page !== index) return null;
-                                            const isActiveMatch = matchIndex === activeSearchIndex;
-                                            return (
-                                                <div
-                                                    key={`search-${matchIndex}`}
-                                                    className={`absolute pointer-events-none z-20 transition-all duration-300 ${isActiveMatch
-                                                        ? 'ring-4 ring-amber-400 bg-amber-400/30'
-                                                        : 'ring-2 ring-yellow-300 bg-yellow-300/20'
-                                                        }`}
-                                                    style={{
-                                                        left: `${match.x * 100}%`,
-                                                        top: `${match.y * 100}%`,
-                                                        width: `${match.w * 100}%`,
-                                                        height: `${match.h * 100}%`,
-                                                        boxShadow: isActiveMatch ? '0 0 20px 4px rgba(251, 191, 36, 0.4)' : 'none'
-                                                    }}
-                                                />
-                                            );
-                                        })}
-                                    </div>
+                                        index={index}
+                                        url={loadedPages[index]}
+                                    />
                                 ))}
-
-                                {isLoadingImage && pageUrls.length > 0 && (
-                                    <div className="py-8 flex flex-col items-center text-slate-400">
-                                        <Loader2 size={24} className="animate-spin mb-2" />
-                                        <span className="text-[10px] uppercase font-bold tracking-widest">
-                                            Loading Sheet {loadingProgress.current + 1} of {loadingProgress.total}...
-                                        </span>
-                                    </div>
-                                )}
                             </div>
                         </div>
                     )}

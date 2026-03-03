@@ -51,10 +51,10 @@ class ConsentExtractor:
         self.client = genai.Client(api_key=API_KEY)
         self.model_name = model_name
 
-    def extract_details(self, pdf_path, processed_pages=None):
+    def extract_details(self, pdf_path, processed_pages=None, global_offset=0, global_total=None):
         """
         Extracts details from ALL pages of the PDF in parallel.
-        Yields: (page_num, data_json) or (page_num, None) if failed.
+        Yields: (page_num, event_dict)
         """
         if processed_pages is None:
             processed_pages = set()
@@ -65,9 +65,10 @@ class ConsentExtractor:
         try:
             doc = fitz.open(pdf_path)
             num_pages = len(doc)
+            target_total = global_total if global_total is not None else num_pages
             
-            print(f"  Extracted {num_pages} pages. Starting chunked parallel analysis...")
-            yield 0, {"type": "init", "total_pages": num_pages}
+            print(f"  Analysing {num_pages} pages for {os.path.basename(pdf_path)}...")
+            yield 0, {"type": "progress", "current": global_offset, "total": target_total, "status": f"Initializing {os.path.basename(pdf_path)}..."}
 
             results = [None] * num_pages
             completed_count = 0
@@ -77,48 +78,21 @@ class ConsentExtractor:
                 chunk_end = min(chunk_start + chunk_size, num_pages)
                 p_tasks = []
                 
-                # Pre-extract images ONLY for this chunk, skipping already processed ones
                 for page_num in range(chunk_start, chunk_end):
                     if page_num in processed_pages:
                         completed_count += 1
                         continue
-                        
-                    page = doc[page_num]
-                    pix = page.get_pixmap(dpi=150)
-                    img_data = pix.tobytes("png")
-                    p_tasks.append({
-                        "page_num": page_num,
-                        "img_data": img_data,
-                        "page_width": page.rect.width,
-                        "page_height": page.rect.height,
-                        "rotation": page.rotation
-                    })
+                    
+                    # Store task info, rendering will happen in parallel per-thread
+                    p_tasks.append(page_num)
                 
-            # Process the chunk in parallel using threads
-            for chunk_start in range(0, num_pages, chunk_size):
-                chunk_end = min(chunk_start + chunk_size, num_pages)
-                p_tasks = []
-                
-                for page_num in range(chunk_start, chunk_end):
-                    if page_num in processed_pages:
-                        completed_count += 1
-                        continue
-                        
-                    page = doc[page_num]
-                    pix = page.get_pixmap(dpi=150)
-                    img_data = pix.tobytes("png")
-                    p_tasks.append({
-                        "page_num": page_num,
-                        "img_data": img_data,
-                        "page_width": page.rect.width,
-                        "page_height": page.rect.height,
-                        "rotation": page.rotation
-                    })
-                
+                if not p_tasks:
+                    continue
+
                 with ThreadPoolExecutor(max_workers=10) as executor:
                     future_to_page = {
-                        executor.submit(self.process_page_parallel, task): task["page_num"] 
-                        for task in p_tasks
+                        executor.submit(self.process_page_parallel, pdf_path, p_num): p_num 
+                        for p_num in p_tasks
                     }
                     
                     for future in as_completed(future_to_page):
@@ -127,13 +101,15 @@ class ConsentExtractor:
                         data = future.result()
                         results[p_num] = data
                         
-                        yield p_num, {"type": "progress", "current": completed_count, "total": num_pages, "page": p_num + 1}
+                        abs_current = global_offset + completed_count
+                        yield p_num, {"type": "progress", "current": abs_current, "total": target_total, "status": f"Scanning page {p_num + 1}..."}
 
             # Sequential Pass to resolve "Ownership Document"
-            print("  Finalizing document classification and sequential lookahead...")
+            print(f"  Finalizing {num_pages} pages for {os.path.basename(pdf_path)}...")
             for i in range(num_pages):
                 data = results[i]
                 if data and data.get("is_wayleave_consent_form"):
+                    print(f"    [Page {i+1}] CONSENT FORM Found. Resolving ownership...")
                     # Scan forward until the next consent form or EOF
                     ownership_doc = "UNDER ADJUDICATION"
                     for j in range(i + 1, num_pages):
@@ -145,19 +121,23 @@ class ConsentExtractor:
                         
                         dt = next_data.get("document_type", "OTHER")
                         if dt == "TITLE_DEED":
+                            print(f"      - Matched TITLE DEED (Page {j+1})")
                             ownership_doc = "TITLE DEED"
                             break # Conclusive for this group
                         elif dt == "LAND_SALE_AGREEMENT":
                             if ownership_doc in ["UNDER ADJUDICATION", "SEARCH AWAITED"]:
+                                print(f"      - Matched LAND SALE AGREEMENT (Page {j+1})")
                                 ownership_doc = "LAND SALE AGREEMENT"
                         elif dt == "SEARCH_DOCUMENT":
                             if ownership_doc == "UNDER ADJUDICATION":
+                                print(f"      - Matched SEARCH DOCUMENT (Page {j+1})")
                                 ownership_doc = "SEARCH AWAITED"
                     
                     data["Ownership Document"] = ownership_doc
                     yield i, {"type": "data", "page_num": i, "data": data}
                 elif data:
-                    print(f"    [Page {i+1}] {data.get('document_type', 'OTHER')}")
+                    dtype = data.get('document_type', 'OTHER')
+                    print(f"    [Page {i+1}] Identified as: {dtype}")
                     yield i, {"type": "skip", "page_num": i}
                 else:
                     yield i, {"type": "skip", "page_num": i}
@@ -170,17 +150,30 @@ class ConsentExtractor:
                 doc.close()
                 print(f"  Closed PDF handle for {pdf_path}")
 
-    def process_page_parallel(self, task):
-        """Helper for parallel execution"""
-        page_num = task["page_num"]
-        img_data = task["img_data"]
-        # Simplified metadata passing
-        data = self.execute_gemini_request(img_data, page_num)
-        if data:
-            data["page_width"] = task["page_width"]
-            data["page_height"] = task["page_height"]
-            data["rotation"] = task["rotation"]
-        return data
+    def process_page_parallel(self, pdf_path, page_num):
+        """Helper for parallel execution: Handles rendering and AI call in one thread."""
+        try:
+            # We open a local handle in each thread for total safety
+            doc = fitz.open(pdf_path)
+            page = doc[page_num]
+            pix = page.get_pixmap(dpi=150)
+            img_data = pix.tobytes("png")
+            
+            # Store metadata needed for snippet creation later
+            page_width = page.rect.width
+            page_height = page.rect.height
+            rotation = page.rotation
+            doc.close()
+
+            data = self.execute_gemini_request(img_data, page_num)
+            if data:
+                data["page_width"] = page_width
+                data["page_height"] = page_height
+                data["rotation"] = rotation
+            return data
+        except Exception as e:
+            print(f"    [Thread Error Page {page_num+1}] {e}")
+            return None
 
     def execute_gemini_request(self, img_data, page_num):
         """Core Gemini call logic separated for parallel use"""
@@ -218,6 +211,7 @@ class ConsentExtractor:
 
             Rules:
             - For 'Plot No', extract ONLY the numerical digits.
+            - Handwritten Signatures: DO NOT transcribe cursive or handwritten signatures as text for names. Look for a PRINTED/TYPED version of the name. If only a signature is present without a nearby printed name in the field, return an empty string (""). NEVER attempt to "spell out" a scribble.
             - If not a WAYLEAVE_CONSENT_FORM, return null for all fields except document_type and is_wayleave_consent_form.
             """
             
@@ -689,6 +683,17 @@ class ExcelWriter:
                          shrink_to_fit=a.shrink_to_fit, indent=a.indent)
 
     @classmethod
+    def _apply_style(cls, src, tgt):
+        """Helper to copy style from one cell to another without copying value."""
+        if src.has_style:
+            tgt.font = cls._copy_font(src.font)
+            tgt.border = cls._copy_border(src.border)
+            tgt.alignment = cls._copy_align(src.alignment)
+            tgt.number_format = src.number_format
+            tgt.protection = copy(src.protection)
+            tgt.fill = copy(src.fill)
+
+    @classmethod
     def append_data(cls, template_path, data_list, output_buffer):
         """Writes extracted data to Excel, matching row-3 formatting."""
         wb = load_workbook(template_path)
@@ -716,6 +721,10 @@ class ExcelWriter:
         # Safely insert exactly len(data_list) rows to push existing footers/merged cells downwards
         ws.insert_rows(start, amount=len(data_list))
 
+        # Project Metadata columns (often constant across rows in the template)
+        # We inherit these from the template row if the extracted data is empty.
+        METADATA_COLS = {2, 3, 4, 5, 6} 
+
         for i, data in enumerate(data_list):
             row = start + i
 
@@ -731,22 +740,25 @@ class ExcelWriter:
             for col, key in COL_MAP.items():
                 if col == 1:
                     continue  # S/NO handled above
+                
                 val = data.get(key, "") if key else ""
                 
-                # Check for merged cell to be absolutely safe (should not happen after insert_rows)
+                # Metadata Inheritance: If extracted value is empty, try to get from template row
+                # (This preserves Project Name, County, Region etc. from Row 3)
+                if not val and col in METADATA_COLS:
+                    val = template_cells[col - 1].value
+
+                # Check for merged cell to be absolutely safe
                 target_cell = ws.cell(row, col)
                 if type(target_cell).__name__ == "MergedCell":
                     continue
                 target_cell.value = val
 
-            # Copy formatting from template row
+            # Copy formatting from template row (Columns 1-14)
             for col in range(1, 15):
                 src = template_cells[col - 1]
                 tgt = ws.cell(row, col)
-                if src.has_style:
-                    if src.font: tgt.font = cls._copy_font(src.font)
-                    if src.border: tgt.border = cls._copy_border(src.border)
-                    if src.alignment: tgt.alignment = cls._copy_align(src.alignment)
+                cls._apply_style(src, tgt)
 
         wb.save(output_buffer)
         return len(data_list)
